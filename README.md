@@ -61,7 +61,7 @@ Deployed URLs and seeded demo logins live in **[DEMO_GUIDE.md](./DEMO_GUIDE.md)*
 
 ```
 hospitality-systems/
-├── template.yaml                  # Root SAM template — every Lambda, both APIs, both state machines
+├── template.yaml                  # Root SAM template — every Lambda, both APIs, both state machines, PMS frontend S3 + CloudFront
 │
 ├── stacks/                        # Nested CloudFormation
 │   ├── vpc.yaml                   #   VPC (2 AZs, public/private subnets, NAT, VPC endpoints)
@@ -248,10 +248,12 @@ also tighten the following:
   validating the policy in-browser against your traffic, promote it to the enforced
   `Content-Security-Policy` header.
 - **WAF managed rules.** The regional WAF ships AWS managed rule groups
-  (Common, SQLi, IP-reputation) in **COUNT** mode, which observes but does not
-  block, so you can confirm there are no false positives against your own traffic
-  first. Promote them to **BLOCK** once validated. (The Known-Bad-Inputs group
-  already blocks by default.)
+  (Common, Known-Bad-Inputs, SQLi, IP-reputation) in **BLOCK** mode. One sub-rule,
+  `SizeRestrictions_BODY` in the Common set, is left in **COUNT** so large request
+  bodies are observed rather than rejected — review it against your own payload
+  sizes before enforcing. If you'd rather validate a rule group against your own
+  traffic before it blocks, switch that group's `OverrideAction` to `Count` first,
+  then promote it back once you've confirmed there are no false positives.
 
 ## Testing
 
