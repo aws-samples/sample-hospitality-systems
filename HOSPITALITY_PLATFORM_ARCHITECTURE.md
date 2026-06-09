@@ -40,64 +40,67 @@
 
 The platform is organized into **six fundamental layers**, connected by a central **async event bus**. Each layer contains independent services that expose RESTful APIs through a unified API Gateway.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           GUEST CHANNELS                                    │
-│  Website/App  │  OTAs (Expedia/Booking)  │  GDS/Travel  │  Walk-in/Kiosk  │
-└──────┬────────┴────────────┬─────────────┴──────┬───────┴────────┬────────┘
-       │                     │                    │                │
-┌──────▼─────────────────────▼────────────────────▼────────────────▼────────┐
-│                     DISTRIBUTION & ACCESS LAYER                           │
-│  Booking Engine  │  Channel Manager  │  API Gateway  │  Webhooks          │
-│  Search|Cart|    │  OTA Sync|Inv     │  Auth|Rate    │  Stripe Events|    │
-│  Promos|Upsells  │  Push|Mapping     │  Limit|Route  │  OTA Notifs        │
-└──────┬───────────┴────────┬──────────┴───────┬──────┴────────────────────┘
-       │                    │                  │
-┌──────▼────────────────────▼──────────────────▼──────────────────────────┐
-│                        CORE HOTEL SYSTEMS                               │
-│                                                                         │
-│  ┌──────────────────┐   ┌───────────────────┐   ┌──────────────────┐   │
-│  │ CRS              │──▶│ PMS               │◀──│ Rate/Revenue     │   │
-│  │ (Central Reserv.) │   │ (Property Mgmt)   │   │ Management       │   │
-│  │                  │   │                   │   │                  │   │
-│  │ Availability     │   │ Check-in/out      │   │ Rate Plans       │   │
-│  │ Inventory        │   │ Room Assignment   │   │ Dynamic Pricing  │   │
-│  │ Group Blocks     │   │ Night Audit       │   │ Restrictions     │   │
-│  │ Overbooking Ctrl │   │ Room Status       │   │ Packages         │   │
-│  └────────┬─────────┘   └─────────┬─────────┘   └──────────────────┘   │
-└───────────┼─────────────────────── ┼────────────────────────────────────┘
-            │                        │
-┌───────────▼────────────────────────▼────────────────────────────────────┐
-│  Async Event Bus                                                        │
-│  reservation.* │ guest.* │ room.* │ charge.* │ payment.*                │
-└──┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─────────────┘
-   │      │      │      │      │      │      │      │      │
-   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
-┌──────────────────────────┐  ┌──────────────────────────────────────────┐
-│  OPERATIONAL SYSTEMS     │  │  FINANCE & GUEST INTELLIGENCE            │
-│                          │  │                                          │
-│  Housekeeping            │  │  Folio / Billing ──▶ Stripe Payments     │
-│  Tasks|Room Status|Sched │  │  Charges|Taxes|      Pre-auth|Capture|   │
-│                          │  │  Split Folios        Refunds             │
-│  POS (Point of Sale)  ───┼──┼──▶                                      │
-│  Restaurant|Spa|Minibar  │  │  CRM / Guest     ──▶ Loyalty System      │
-│                          │  │  Profiles             Points|Tiers|      │
-│  Guest Messaging         │  │  Prefs|History|       Redemptions        │
-│  Email|SMS|Push          │  │  De-dup                                  │
-│                          │  │                                          │
-│  Key / Access Mgmt       │  │                                          │
-│  Digital Key|Logs        │  │                                          │
-└──────────────────────────┘  └──────────────────────────────────────────┘
-                         │                    │
-┌────────────────────────▼────────────────────▼──────────────────────────┐
-│                          INFRASTRUCTURE                                │
-│  Auth Service    │  Data Lake       │  Analytics      │  Search      │ │
-│  Guest + Staff   │  Event Archive   │  Dashboards     │  Guest       │ │
-│  Pools           │                  │  Occ|RevPAR     │  Lookup      │ │
-│                  │                  │  ADR             │  Logs        │ │
-│                                     Cache                              │
-│                                     Availability | Sessions            │
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph CHANNELS["GUEST CHANNELS"]
+        direction LR
+        CH["Website / App &bull; OTAs (Expedia / Booking) &bull; GDS / Travel &bull; Walk-in / Kiosk"]
+    end
+
+    subgraph ACCESS["DISTRIBUTION &amp; ACCESS LAYER"]
+        direction LR
+        BE["Booking Engine<br/>Search | Cart | Promos | Upsells"]
+        CM["Channel Manager<br/>OTA Sync | Inventory | Push | Mapping"]
+        AGW["API Gateway<br/>Auth | Rate Limit | Routing"]
+        WH["Webhooks<br/>Stripe Events | OTA Notifs"]
+    end
+
+    subgraph CORE["CORE HOTEL SYSTEMS"]
+        direction LR
+        CRS["CRS (Central Reservations)<br/>Availability | Inventory<br/>Group Blocks | Overbooking Ctrl"]
+        PMS["PMS (Property Management)<br/>Check-in/out | Room Assignment<br/>Night Audit | Room Status"]
+        RRM["Rate / Revenue Management<br/>Rate Plans | Dynamic Pricing<br/>Restrictions | Packages"]
+        CRS <--> PMS
+        RRM --> PMS
+    end
+
+    BUS["**Async Event Bus**<br/>reservation.* &bull; guest.* &bull; room.* &bull; charge.* &bull; payment.*"]
+
+    subgraph OPS["OPERATIONAL SYSTEMS"]
+        direction TB
+        HK["Housekeeping<br/>Tasks | Room Status | Scheduling"]
+        POS["POS (Point of Sale)<br/>Restaurant | Spa | Minibar"]
+        MSG["Guest Messaging<br/>Email | SMS | Push"]
+        KEY["Key / Access Management<br/>Digital Key | Logs"]
+    end
+
+    subgraph FIN["FINANCE &amp; GUEST INTELLIGENCE"]
+        direction TB
+        FOLIO["Folio / Billing<br/>Charges | Taxes | Split Folios"]
+        STRIPE["Stripe Payments<br/>Pre-auth | Capture | Refunds"]
+        CRM["CRM / Guest Profiles<br/>Prefs | History | De-dup"]
+        LOYALTY["Loyalty System<br/>Points | Tiers | Redemptions"]
+        FOLIO --> STRIPE
+        CRM --> LOYALTY
+    end
+
+    subgraph INFRA["INFRASTRUCTURE"]
+        direction LR
+        AUTH["Auth Service<br/>Guest + Staff Pools"]
+        LAKE["Data Lake<br/>Event Archive"]
+        ANALYTICS["Analytics<br/>Dashboards | Occ | RevPAR | ADR"]
+        SEARCH["Search<br/>Guest Lookup | Logs"]
+        CACHE["Cache<br/>Availability | Sessions"]
+    end
+
+    CHANNELS --> ACCESS
+    ACCESS --> CORE
+    CORE --> BUS
+    BUS --> OPS
+    BUS --> FIN
+    POS --> FOLIO
+    OPS --> INFRA
+    FIN --> INFRA
 ```
 
 > **Visual Diagram**: A rendered architecture diagram of the implemented platform lives at
