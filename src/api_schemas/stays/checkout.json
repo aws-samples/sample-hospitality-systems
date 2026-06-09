@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "CheckOut",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "expressCheckout": { "type": "boolean" }
+  }
+}

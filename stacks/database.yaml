@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - Aurora Serverless v2 PostgreSQL cluster with
+  Secrets Manager credentials and RDS Proxy.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from the VPC stack
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Comma-separated private subnet IDs from the VPC stack
+
+  LambdaSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda security group ID from the VPC stack
+
+  EnableDataApi:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Enable the RDS Data API (HTTP endpoint) on the cluster. OFF by default —
+      it is a master-user SQL path that bypasses the IAM-proxy model. See the
+      root template parameter of the same name.
+
+Conditions:
+  EnableDataApiCondition: !Equals [!Ref EnableDataApi, "true"]
+
+Resources:
+  ##############################################################################
+  # DB Subnet Group
+  ##############################################################################
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub AnyCompany ${Environment} Aurora private subnets
+      SubnetIds: !Ref PrivateSubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-db-subnet-group
+
+  ##############################################################################
+  # Database Security Group
+  ##############################################################################
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Aurora PostgreSQL cluster
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroupId
+          Description: Allow PostgreSQL access from Lambda functions
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref RDSProxySecurityGroup
+          Description: Allow PostgreSQL access from RDS Proxy
+      # Aurora only responds to inbound connections; it never initiates
+      # outbound traffic. Declare an explicit no-op egress (to a single
+      # discard address) instead of leaving the default allow-all, which
+      # CloudFormation would otherwise add. (cfn_nag F1000)
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 127.0.0.1/32
+          Description: No outbound traffic - Aurora never initiates connections
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-aurora-sg
+
+  RDSProxySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS Proxy
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroupId
+          Description: Allow PostgreSQL access from Lambda functions
+      # The proxy initiates outbound connections only to Aurora (5432) and to
+      # the Secrets Manager interface VPC endpoint (443, for credential
+      # retrieval). Egress is scoped to exactly those two destinations rather
+      # than allow-all.
+      #
+      # The 443 rule (to the Secrets Manager endpoint, which shares the Lambda SG
+      # — see vpc.yaml SecretsManagerEndpoint) is declared inline. The 5432 rule
+      # to Aurora is declared as a SEPARATE AWS::EC2::SecurityGroupEgress
+      # resource (RDSProxyToAuroraEgress) below: DatabaseSecurityGroup's ingress
+      # already references this SG, so an inline egress back to it would create a
+      # circular dependency. AWS requires the standalone-rule pattern to break it.
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref LambdaSecurityGroupId
+          Description: HTTPS to the Secrets Manager VPC endpoint
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-rds-proxy-sg
+
+  # Standalone egress rule (proxy -> Aurora, 5432). Kept out of the SG's inline
+  # rules to avoid the circular dependency with DatabaseSecurityGroup, whose
+  # ingress references RDSProxySecurityGroup.
+  RDSProxyToAuroraEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RDSProxySecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL to the Aurora cluster
+
+  ##############################################################################
+  # Master Credentials
+  #
+  # The master password is managed by RDS in Secrets Manager via the cluster's
+  # ManageMasterUserPassword property. There is no self-managed secret here;
+  # the generated secret is referenced elsewhere as
+  # !GetAtt AuroraCluster.MasterUserSecret.SecretArn.
+  ##############################################################################
+
+  ##############################################################################
+  # Custom Cluster Parameter Group
+  # Sets a server-side safety net for leaked transactions: any session that
+  # has been idle inside an open transaction for 30s is automatically
+  # terminated by Postgres. Belt-and-suspenders alongside the rollback-on-
+  # cached-conn guard in src/layers/common/utils/database.py.
+  ##############################################################################
+  AuroraClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Sub AnyCompany ${Environment} Aurora PG17 cluster params
+      Family: aurora-postgresql17
+      Parameters:
+        idle_in_transaction_session_timeout: '30000'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # Aurora Serverless v2 Cluster (PostgreSQL 17.9)
+  ##############################################################################
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    # Sample default: delete the cluster with the stack so `sam delete` tears the
+    # environment down cleanly with no lingering snapshot cost. PRODUCTION should
+    # change both of these back to `Snapshot` (keep a final backup on delete) and
+    # set DeletionProtection: true below.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBClusterIdentifier: !Sub anycompany-${Environment}-cluster
+      Engine: aurora-postgresql
+      EngineVersion: '17.9'
+      Port: 5432
+      MasterUsername: anycompany_admin
+      # RDS manages the master password in Secrets Manager and rotates it
+      # automatically (every 7 days by default), instead of a self-managed
+      # secret with a static password. The generated secret is referenced via
+      # !GetAtt AuroraCluster.MasterUserSecret.SecretArn.
+      ManageMasterUserPassword: true
+      DatabaseName: anycompany
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+      DBClusterParameterGroupName: !Ref AuroraClusterParameterGroup
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2
+      # 7 days is sufficient for this sample. Production deployments should
+      # raise this based on your organization's data-retention and
+      # dispute-resolution requirements (Aurora supports up to 35 days of
+      # automated backups).
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      # Sample default: false so `sam delete` is not blocked. PRODUCTION should
+      # set this to true (and restore the Snapshot deletion policy above).
+      DeletionProtection: false
+      # IAM database authentication at the cluster level. Application Lambdas
+      # connect through RDS Proxy (which has its own IAM-auth path), so this is
+      # additive; it lets clients also obtain short-lived auth tokens directly
+      # against the cluster instead of using a long-lived password.
+      EnableIAMDatabaseAuthentication: true
+      # RDS Data API — HTTPS-based SQL via `aws rds-data execute-statement`, handy
+      # for ad-hoc DB inspection without VPC-attached Lambdas. OFF by default: it
+      # runs as the master user and bypasses the per-function IAM-proxy model.
+      # Gated behind the EnableDataApi parameter; opt in only for dev/demo.
+      EnableHttpEndpoint: !If [EnableDataApiCondition, true, false]
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-aurora-cluster
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # Aurora Serverless v2 Instance
+  ##############################################################################
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub anycompany-${Environment}-instance-1
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      # Auto-apply minor PG patches in the cluster's maintenance window. Major
+      # upgrades still require an explicit modify-db-cluster --engine-version.
+      AutoMinorVersionUpgrade: true
+      PubliclyAccessible: false
+      # Performance Insights — 7-day rolling free tier. Provides the AAS
+      # (Active Average Sessions) view and query-level metrics for diagnosing
+      # connection and performance issues.
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-aurora-instance-1
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Note: no SecretTargetAttachment is needed — when RDS manages the master
+  # password (ManageMasterUserPassword), it already binds the generated secret
+  # to the cluster.
+
+  ##############################################################################
+  # RDS Proxy IAM Role
+  ##############################################################################
+  RDSProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-rds-proxy-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RDSProxySecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+
+  ##############################################################################
+  # RDS Proxy
+  ##############################################################################
+  RDSProxy:
+    Type: AWS::RDS::DBProxy
+    DependsOn: AuroraInstance
+    Properties:
+      DBProxyName: !Sub anycompany-${Environment}-proxy
+      EngineFamily: POSTGRESQL
+      RequireTLS: true
+      RoleArn: !GetAtt RDSProxyRole.Arn
+      VpcSubnetIds: !Ref PrivateSubnetIds
+      VpcSecurityGroupIds:
+        - !Ref RDSProxySecurityGroup
+      Auth:
+        - AuthScheme: SECRETS
+          IAMAuth: REQUIRED
+          SecretArn: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+      Tags:
+        - Key: Name
+          Value: !Sub anycompany-${Environment}-rds-proxy
+        - Key: Environment
+          Value: !Ref Environment
+
+  RDSProxyTargetGroup:
+    Type: AWS::RDS::DBProxyTargetGroup
+    Properties:
+      DBProxyName: !Ref RDSProxy
+      DBClusterIdentifiers:
+        - !Ref AuroraCluster
+      TargetGroupName: default
+      ConnectionPoolConfigurationInfo:
+        MaxConnectionsPercent: 100
+        MaxIdleConnectionsPercent: 50
+        # Match the API Gateway integration timeout (30s, hard cap).
+        # A longer borrow timeout wastes work — API Gateway has already
+        # returned 504 to the caller, but Proxy keeps queueing requests and
+        # burning Lambda concurrency. Match the request-path ceiling so
+        # Lambdas either acquire a connection or fail fast.
+        ConnectionBorrowTimeout: 30
+
+Outputs:
+  DBClusterEndpoint:
+    Description: Aurora cluster writer endpoint
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+    Export:
+      Name: !Sub ${AWS::StackName}-DBClusterEndpoint
+
+  DBSecretArn:
+    Description: ARN of the RDS-managed database master credentials secret
+    Value: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+    Export:
+      Name: !Sub ${AWS::StackName}-DBSecretArn
+
+  DBProxyEndpoint:
+    Description: RDS Proxy endpoint
+    Value: !GetAtt RDSProxy.Endpoint
+    Export:
+      Name: !Sub ${AWS::StackName}-DBProxyEndpoint
+
+  DBProxyArn:
+    Description: ARN of the RDS Proxy
+    Value: !GetAtt RDSProxy.DBProxyArn
+    Export:
+      Name: !Sub ${AWS::StackName}-DBProxyArn
+
+  # The Proxy resource ID (e.g. prx-0d75da7d82232a25a) is the substring of the
+  # DBProxyArn after the final colon. Per-function IAM roles use it to scope
+  # rds-db:connect to a specific Proxy + DB user, instead of the wildcard
+  # arn:aws:rds-db:*:*:dbuser:*/* the shared role currently uses.
+  DBProxyResourceId:
+    Description: Resource ID of the RDS Proxy (last segment of the ARN)
+    Value: !Select [6, !Split [":", !GetAtt RDSProxy.DBProxyArn]]
+    Export:
+      Name: !Sub ${AWS::StackName}-DBProxyResourceId
+
+  DBClusterArn:
+    Description: Aurora cluster ARN (for use with the RDS Data API)
+    Value: !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${AuroraCluster}
+    Export:
+      Name: !Sub ${AWS::StackName}-DBClusterArn

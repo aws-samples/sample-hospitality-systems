@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "RedeemLoyaltyPoints",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["points"],
+  "properties": {
+    "points": { "type": "integer", "minimum": 1 },
+    "reservationId": { "type": "string" }
+  }
+}

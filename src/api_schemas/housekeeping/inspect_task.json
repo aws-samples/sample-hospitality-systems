@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "InspectHousekeepingTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["passed"],
+  "properties": {
+    "passed": { "type": "boolean" },
+    "notes": { "type": "string", "maxLength": 2000 }
+  }
+}

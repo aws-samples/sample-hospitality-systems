@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - WAF WebACL (REGIONAL scope) for the REST API Gateways.
+  The CLOUDFRONT-scoped WebACL in waf.yaml protects the frontend distributions
+  and CANNOT be reused here: WAFv2 scope is immutable and CLOUDFRONT vs REGIONAL
+  ACLs are distinct resources. This ACL is associated with both REST API stages
+  from the root template (the association resources live there because they need
+  the REST API ids). Managed rule groups BLOCK by default (one CommonRuleSet
+  sub-rule, SizeRestrictions_BODY, is held to COUNT to avoid false-positives on
+  large booking payloads); the two rate-limit rules BLOCK directly.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  RegionalWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub anycompany-${Environment}-rest-web-acl
+      Scope: REGIONAL
+      Description: !Sub WAF WebACL for AnyCompany ${Environment} REST API Gateways
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub anycompany-${Environment}-rest-web-acl
+      Rules:
+        ##################################################################
+        # AWS Managed Rules — Common Rule Set        [BLOCK mode]
+        # Broad OWASP coverage (XSS, path traversal, LFI/RFI, bad UA, etc.),
+        # blocking by default. One sub-rule is held back to COUNT via
+        # RuleActionOverrides: SizeRestrictions_BODY flags any request body
+        # over 8 KB (a fixed AWS threshold), which legitimate multi-guest /
+        # multi-room booking payloads and large Cognito JWTs can exceed — so
+        # blocking it would 403 real bookings. The rest of the group blocks.
+        ##################################################################
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              RuleActionOverrides:
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-common-rules
+
+        ##################################################################
+        # AWS Managed Rules — Known Bad Inputs       [BLOCK mode]
+        # Deployed in Block (not Count): this group targets exploit
+        # signatures (host-header injection, malformed requests, known
+        # JNDI/lookup payloads) that have no legitimate match in this API's
+        # traffic, so the false-positive risk that keeps CommonRuleSet in
+        # Count does not apply here. None lets the group's own rule actions
+        # (Block) stand.
+        ##################################################################
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-bad-inputs
+
+        ##################################################################
+        # AWS Managed Rules — SQL injection          [BLOCK mode]
+        # Signature-based SQLi detection; no legitimate request matches, so
+        # this blocks by default (no false-positive carve-out needed).
+        ##################################################################
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-sqli
+
+        ##################################################################
+        # AWS Managed Rules — Amazon IP Reputation   [BLOCK mode]
+        # Blocks source IPs on Amazon's threat-intel reputation lists;
+        # blocks by default (no legitimate-traffic carve-out needed).
+        ##################################################################
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 4
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-ip-reputation
+
+        ##################################################################
+        # Rate limit — Stripe webhook                [BLOCK]
+        # 100 requests / 5 min per IP, scoped to POST /webhooks/stripe.
+        # Stripe sends a handful per second under load; 100/5min is ~20x
+        # headroom, protecting the public webhook endpoint (which relies on
+        # signature verification for authenticity) from flooding. BLOCK
+        # directly: it's our own threshold, not a managed-rule false-positive
+        # risk.
+        ##################################################################
+        - Name: RateLimitStripeWebhook
+          Priority: 5
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 100
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: /webhooks/stripe
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: STARTS_WITH
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-stripe-rate-limit
+
+        ##################################################################
+        # Rate limit — global per-IP fallback        [BLOCK]
+        # 2000 requests / 5 min per IP, everything else. Mirrors the
+        # CloudFront WebACL's fallback. BLOCK directly (our own threshold).
+        ##################################################################
+        - Name: RateLimitPerIP
+          Priority: 6
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rest-rate-limit
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # WAF logging to CloudWatch Logs. The log group name MUST start with
+  # "aws-waf-logs-" for WAFv2 to accept it as a logging destination.
+  RegionalWebACLLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub aws-waf-logs-anycompany-${Environment}-rest
+      RetentionInDays: 30
+
+  RegionalWebACLLogging:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Properties:
+      ResourceArn: !GetAtt RegionalWebACL.Arn
+      LogDestinationConfigs:
+        - !GetAtt RegionalWebACLLogGroup.Arn
+
+Outputs:
+  RegionalWebACLArn:
+    Description: Regional WAF WebACL ARN for REST API stage association
+    Value: !GetAtt RegionalWebACL.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-RegionalWebACLArn

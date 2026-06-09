@@ -1,0 +1,418 @@
+{
+  "crs_availability_missing_property": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 400
+  },
+  "crs_booking_search": {
+    "body": {
+      "data": [
+        {
+          "address": "<str>",
+          "cheapestOption": {
+            "bedConfiguration": "<str>",
+            "cancellationPolicy": "<str>",
+            "maxOccupancy": "<int>",
+            "numNights": "<int>",
+            "pricePerNight": "<str>",
+            "ratePlanCode": "<str>",
+            "ratePlanId": "<str>",
+            "ratePlanName": "<str>",
+            "roomTypeCode": "<str>",
+            "roomTypeId": "<str>",
+            "roomTypeName": "<str>",
+            "totalAfterTax": "<str>",
+            "totalBeforeTax": "<str>"
+          },
+          "checkInTime": "<str>",
+          "checkOutTime": "<str>",
+          "city": "<str>",
+          "country": "<str>",
+          "heroImageUrl": "<null>",
+          "isFeatured": "<bool>",
+          "latitude": "<str>",
+          "longitude": "<str>",
+          "phone": "<str>",
+          "propertyAmenities": [
+            "<str>"
+          ],
+          "propertyCode": "<str>",
+          "propertyDescription": "<str>",
+          "propertyId": "<str>",
+          "propertyName": "<str>",
+          "starRating": "<int>",
+          "state": "<str>",
+          "zipCode": "<str>"
+        }
+      ],
+      "metadata": {
+        "pagination": {
+          "limit": "<int>",
+          "page": "<int>",
+          "totalItems": "<int>",
+          "totalPages": "<int>"
+        },
+        "searchCriteria": {
+          "adults": "<int>",
+          "checkIn": "<str>",
+          "checkOut": "<str>",
+          "children": "<int>",
+          "city": "<null>",
+          "numNights": "<int>",
+          "state": "<null>"
+        }
+      },
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "crs_booking_search_missing_dates": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 400
+  },
+  "crs_get_property": {
+    "body": {
+      "data": {
+        "address": "<str>",
+        "amenities": [
+          "<str>"
+        ],
+        "checkInTime": "<str>",
+        "checkOutTime": "<str>",
+        "city": "<str>",
+        "code": "<str>",
+        "country": "<str>",
+        "createdAt": "<str>",
+        "description": "<str>",
+        "email": "<str>",
+        "heroImageUrl": "<null>",
+        "imageUrls": "<null>",
+        "isActive": "<bool>",
+        "isFeatured": "<bool>",
+        "latitude": "<float>",
+        "longitude": "<float>",
+        "name": "<str>",
+        "phone": "<str>",
+        "propertyId": "<str>",
+        "region": "<null>",
+        "roomTypes": [
+          {
+            "accessibilityType": "<null>",
+            "amenities": [
+              "<str>"
+            ],
+            "baseRate": "<float>",
+            "bedConfiguration": "<str>",
+            "code": "<str>",
+            "createdAt": "<str>",
+            "description": "<str>",
+            "imageUrls": "<null>",
+            "isActive": "<bool>",
+            "maxOccupancy": "<int>",
+            "name": "<str>",
+            "propertyId": "<str>",
+            "roomTypeId": "<str>",
+            "smokingAllowed": "<bool>",
+            "sortOrder": "<int>",
+            "squareFeet": "<int>",
+            "updatedAt": "<str>"
+          }
+        ],
+        "starRating": "<int>",
+        "state": "<str>",
+        "timezone": "<str>",
+        "totalRooms": "<int>",
+        "updatedAt": "<str>",
+        "website": "<str>",
+        "zipCode": "<str>"
+      },
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "crs_get_property_bad_uuid": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 400
+  },
+  "crs_get_property_not_found": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 404
+  },
+  "crs_list_properties_public": {
+    "body": {
+      "data": [
+        {
+          "address": "<str>",
+          "amenities": [
+            "<str>"
+          ],
+          "checkInTime": "<str>",
+          "checkOutTime": "<str>",
+          "city": "<str>",
+          "code": "<str>",
+          "country": "<str>",
+          "createdAt": "<str>",
+          "description": "<str>",
+          "email": "<str>",
+          "heroImageUrl": "<null>",
+          "imageUrls": "<null>",
+          "isActive": "<bool>",
+          "isFeatured": "<bool>",
+          "latitude": "<float>",
+          "longitude": "<float>",
+          "name": "<str>",
+          "phone": "<str>",
+          "propertyId": "<str>",
+          "region": "<null>",
+          "starRating": "<int>",
+          "state": "<str>",
+          "timezone": "<str>",
+          "totalRooms": "<int>",
+          "updatedAt": "<str>",
+          "website": "<str>",
+          "zipCode": "<str>"
+        }
+      ],
+      "metadata": {
+        "pagination": {
+          "limit": "<int>",
+          "page": "<int>",
+          "totalItems": "<int>",
+          "totalPages": "<int>"
+        }
+      },
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "crs_list_reservations_as_guest": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 400
+  },
+  "crs_list_reservations_requires_auth": {
+    "body": {
+      "message": "<str>"
+    },
+    "status": 401
+  },
+  "crs_list_room_types": {
+    "body": {
+      "data": [
+        {
+          "accessibilityType": "<null>",
+          "amenities": [
+            "<str>"
+          ],
+          "baseRate": "<float>",
+          "bedConfiguration": "<str>",
+          "bestAvailableRate": {
+            "basePrice": "<float>",
+            "ratePlanId": "<str>",
+            "ratePlanName": "<str>",
+            "roomTypeId": "<str>"
+          },
+          "code": "<str>",
+          "createdAt": "<str>",
+          "description": "<str>",
+          "imageUrls": "<null>",
+          "isActive": "<bool>",
+          "maxOccupancy": "<int>",
+          "name": "<str>",
+          "propertyId": "<str>",
+          "roomTypeId": "<str>",
+          "smokingAllowed": "<bool>",
+          "sortOrder": "<int>",
+          "squareFeet": "<int>",
+          "updatedAt": "<str>"
+        }
+      ],
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "pms_folios_admin": {
+    "body": {
+      "data": {
+        "folios": [
+          {
+            "checkInDate": "<str>",
+            "checkOutDate": "<str>",
+            "folioId": "<str>",
+            "guestName": "<str>",
+            "paidAt": "<null>",
+            "reservationId": "<str>",
+            "status": "<str>",
+            "totalAmount": "<null>"
+          }
+        ],
+        "pagination": {
+          "limit": "<int>",
+          "page": "<int>",
+          "total": "<int>",
+          "totalPages": "<int>"
+        }
+      },
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "pms_loyalty_adjust_frontdesk_forbidden": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 403
+  },
+  "pms_occupancy_admin": {
+    "body": {
+      "data": {
+        "endDate": "<str>",
+        "properties": [
+          {
+            "checkInsToday": "<int>",
+            "checkOutsToday": "<int>",
+            "city": "<str>",
+            "name": "<str>",
+            "occupancyPercent": "<float>",
+            "occupiedRooms": "<int>",
+            "propertyId": "<str>",
+            "region": "<null>",
+            "revenueToday": "<float>",
+            "totalRooms": "<int>"
+          }
+        ],
+        "startDate": "<str>",
+        "summary": {
+          "overallOccupancy": "<float>",
+          "totalOccupied": "<int>",
+          "totalProperties": "<int>",
+          "totalRooms": "<int>"
+        }
+      },
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "pms_occupancy_housekeeping_forbidden": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 403
+  },
+  "pms_post_charge_frontdesk_forbidden": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 403
+  },
+  "pms_stays_admin": {
+    "body": {
+      "data": {
+        "pagination": {
+          "limit": "<int>",
+          "page": "<int>",
+          "total": "<int>",
+          "totalPages": "<int>"
+        },
+        "stays": [
+          {
+            "checkInDate": "<str>",
+            "checkOutDate": "<str>",
+            "checkedInAt": "<null>",
+            "checkedOutAt": "<null>",
+            "guestId": "<str>",
+            "guestName": "<str>",
+            "loyaltyTier": "<str>",
+            "propertyId": "<str>",
+            "reservationId": "<str>",
+            "roomId": "<null>",
+            "roomNumber": "<null>",
+            "roomType": "<str>",
+            "status": "<str>"
+          }
+        ]
+      },
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  },
+  "pms_stays_housekeeping_forbidden": {
+    "body": {
+      "error": {
+        "code": "<str>",
+        "message": "<str>"
+      },
+      "success": "<bool>"
+    },
+    "status": 403
+  },
+  "pms_stays_requires_auth": {
+    "body": {
+      "message": "<str>"
+    },
+    "status": 401
+  },
+  "pms_tasks_housekeeping_ok": {
+    "body": {
+      "data": {
+        "pagination": {
+          "limit": "<int>",
+          "page": "<int>",
+          "total": "<int>",
+          "totalPages": "<int>"
+        },
+        "tasks": [
+          "<empty>"
+        ]
+      },
+      "metadata": {},
+      "success": "<bool>"
+    },
+    "status": 200
+  }
+}

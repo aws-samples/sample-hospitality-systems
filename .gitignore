@@ -1,0 +1,186 @@
+# =============================================================================
+# AnyCompany Hotel — Repo .gitignore
+# =============================================================================
+# This file errs toward over-ignoring. The cost of an accidental commit of a
+# secret (Stripe key, AWS credential, signing key) is high; the cost of a
+# false-positive ignore is "git add -f filename". Choose accordingly.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Secrets & credentials — NEVER commit. If you find a real secret in a tracked
+# file, rotate it immediately and scrub the git history.
+# -----------------------------------------------------------------------------
+# Generic secret bearers
+secrets.*
+*.secret
+*.secrets
+*-secret
+*-secret.*
+*-secrets
+*-secrets.*
+*_secret
+*_secret.*
+*_secrets
+*_secrets.*
+credentials.*
+*credentials.json
+*-credentials.json
+.aws-credentials
+.aws/credentials
+.aws/config
+
+# Private keys, certificates, signing material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.csr
+*.gpg
+*.asc
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Stripe / Cognito / OAuth client secrets accidentally written to disk
+*stripe*.json
+!frontend/src/**/stripe*.tsx
+!frontend/src/**/stripe*.ts
+!src/layers/common/utils/stripe_client.py
+*webhook-secret*
+*.session
+.htpasswd
+
+# Terraform state (in case anyone adds it later — state files contain secrets)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# -----------------------------------------------------------------------------
+# Environment files — every variant. The pattern .env, .env.local, .env.dev,
+# .env.staging.local etc. is intentionally explicit so a typo in a new env
+# name never slips a real secret through.
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Per-frontend overrides (defense in depth — the wildcard rules above catch
+# these too, but explicit beats clever).
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+pms-frontend/.env
+pms-frontend/.env.*
+!pms-frontend/.env.example
+
+# -----------------------------------------------------------------------------
+# Build artifacts — never ship these in version control.
+# -----------------------------------------------------------------------------
+# AWS SAM
+.aws-sam/
+# `sam deploy --guided` writes samconfig.toml locally with the operator's own
+# stack name, region, and managed-artifact bucket — keep it out of version control.
+samconfig.toml
+samconfig.local.toml
+
+# Lambda deployment zips
+*.zip
+!.kiro/**/*.zip   # session attachments, if any
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+venv/
+env/
+.venv/
+.venv-test/
+.python-version
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.vite/
+.next/
+.nuxt/
+*.tsbuildinfo
+
+# -----------------------------------------------------------------------------
+# IDE / editor settings — keep these per-developer, not in the repo.
+# -----------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+*.bak
+
+# Kiro AI-IDE workspace — local-only (rule files + session scratch). Untracked;
+# never published. Lives on each developer's disk but is not part of the repo.
+.kiro/
+
+# AI-DLC planning/design scaffolding — not product, removed before publishing.
+aidlc-docs/
+
+# -----------------------------------------------------------------------------
+# OS noise
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Logs and runtime data
+# -----------------------------------------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.seed
+
+# -----------------------------------------------------------------------------
+# Test artifacts
+# -----------------------------------------------------------------------------
+.playwright-cli/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# -----------------------------------------------------------------------------
+# Temporary / scratch
+# -----------------------------------------------------------------------------
+/tmp/
+tmp/
+*.tmp
+scratch/

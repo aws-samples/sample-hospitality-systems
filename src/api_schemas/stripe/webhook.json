@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "StripeWebhook",
+  "type": "object",
+  "comment": "Minimal: Stripe sends many event types with varying data objects. We only assert the envelope has a type. additionalProperties is allowed because Stripe's payload is large and provider-controlled. Signature verification (not schema) is the real gate on this endpoint.",
+  "required": ["type"],
+  "properties": {
+    "type": { "type": "string" },
+    "id": { "type": "string" },
+    "data": { "type": "object" }
+  }
+}

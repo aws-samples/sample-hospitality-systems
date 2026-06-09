@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "CheckIn",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "roomId": { "type": "string" },
+    "notes": { "type": "string", "maxLength": 2000 }
+  }
+}

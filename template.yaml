@@ -1,0 +1,3246 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AnyCompany Hotels & Resorts - Booking Platform
+
+Globals:
+  Function:
+    Runtime: python3.12
+    # Graviton2 (arm64): ~20% cheaper per GB-s and typically faster init for
+    # Python workloads. All bundled native deps (psycopg, cryptography) ship
+    # arm64 wheels; pip resolves the right architecture at build time.
+    Architectures:
+      - arm64
+    Timeout: 60
+    MemorySize: 256
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        DB_SECRET_ARN: !GetAtt DatabaseStack.Outputs.DBSecretArn
+        DB_PROXY_ENDPOINT: !GetAtt DatabaseStack.Outputs.DBProxyEndpoint
+        DB_NAME: anycompany
+        EVENT_BUS_NAME: !GetAtt EventsStack.Outputs.EventBusName
+        COGNITO_USER_POOL_ID: !GetAtt AuthStack.Outputs.UserPoolId
+        # Client IDs used as the audience allowlist when handlers re-verify a
+        # raw JWT signature. Both clients mint ID tokens that reach the APIs
+        # (SPA = browser; admin-auth = simulator/tests).
+        COGNITO_USER_POOL_CLIENT_ID: !GetAtt AuthStack.Outputs.UserPoolClientId
+        ADMIN_AUTH_CLIENT_ID: !GetAtt AuthStack.Outputs.AdminAuthClientId
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  StripePublishableKey:
+    Type: String
+    Default: pk_test_placeholder
+    Description: Stripe publishable key (test mode)
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Custom domain name (optional)
+  DeployActivitySimulator:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Deploy the scheduled activity simulator (demo-traffic generator). OFF by
+      default; opt in for demo/dev environments. When false, no simulator
+      function, schedule, IAM role, Cognito service user, or credentials secret
+      is created.
+  EnableCloudFrontWaf:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Attach the CLOUDFRONT-scope WAF WebACL to the SPA distributions. ON by
+      default. A CLOUDFRONT-scope WAFv2 WebACL can ONLY be created in us-east-1,
+      so deployments to ANY OTHER region MUST set this to "false" or the stack
+      fails with "The scope is not valid". When false, the SPA CloudFront
+      distributions deploy without a WAF; the REGIONAL WAF on the REST API
+      stages (the data plane) is unaffected and always deployed.
+  EnableDataApi:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Enable the RDS Data API (HTTP endpoint) on the Aurora cluster. OFF by
+      default: the Data API is an HTTPS SQL path that runs as the master user and
+      bypasses the per-function IAM-proxy access model, so anyone with rds-data
+      permissions plus the cluster/secret ARNs can run arbitrary SQL. Leave it
+      off for production. Turn it on only for dev/demo environments that want
+      ad-hoc query access (e.g. `aws rds-data execute-statement`).
+
+Conditions:
+  # Allow Vite dev-server origins (http://localhost:5173/5174) in CORS for any
+  # non-prod deployment so developers can run the SPAs locally against the
+  # deployed backend. Prod deploys drop these entries entirely via AWS::NoValue.
+  IsNonProd: !Not [!Equals [!Ref Environment, prod]]
+  # Gate the activity simulator (function, schedule, IAM role, Cognito service
+  # user, creds secret) behind an explicit opt-in. Off by default for adopters.
+  DeploySimulator: !Equals [!Ref DeployActivitySimulator, "true"]
+  # Gate the CLOUDFRONT-scope SPA WAF. Must be false for non-us-east-1 deploys
+  # (CLOUDFRONT WebACLs only exist in us-east-1). See EnableCloudFrontWaf.
+  DeployCloudFrontWaf: !Equals [!Ref EnableCloudFrontWaf, "true"]
+
+Resources:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Per-function IAM role catalog — each Lambda gets a least-privilege role
+  # scoped to only the resources it needs (no shared catch-all role).
+  # ──────────────────────────────────────────────────────────────────────────
+  # Each Lambda is assigned a role tightly scoped to the AWS APIs and
+  # resources it actually uses. Permissions are grouped into buckets matching
+  # the handler's permission shape (audited from code).
+  #
+  # Strategy:
+  #   1. Every role attaches AWSLambdaVPCAccessExecutionRole (managed) for
+  #      logs + ENI lifecycle. AWS maintains it; one less thing to audit.
+  #   2. Custom inline policies are scoped to specific resource ARNs — no
+  #      account-wide wildcards. The DB Proxy ARN, event bus ARN, Stripe
+  #      secret ARN, state machine ARNs, queue ARNs, and SES identity are
+  #      all wired by reference.
+  #
+  # An earlier shared LambdaExecutionRole granted the union of every
+  # permission any handler in the codebase used; most handlers received far
+  # more than they needed. It was deleted once all functions migrated to the
+  # role catalog below.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  # Bucket 1 — Read-only DB.
+  # Used by ~30 handlers that issue SELECTs only (search/get/list).
+  LambdaDbReadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-db-read
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+
+  # Migration / seed role — assumed by the short-lived Lambdas that
+  # scripts/run_migration.py and the seed scripts create to run schema DDL and
+  # data seeding inside the VPC, connecting through RDS Proxy as the master user
+  # (anycompany_admin). Operator tooling, not an application Lambda; kept
+  # separate so the per-function role catalog above stays scoped to runtime
+  # handlers. The scripts look this role up by logical id (LambdaMigrationRole).
+  LambdaMigrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-migration
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+
+  # Bucket 2 — DB + EventBridge writes.
+  # Used by ~17 handlers that emit reservation/billing/loyalty/etc events.
+  LambdaDbWriteEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-db-write-event
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+
+  # Bucket 3 — DB + EventBridge + Stripe secret read.
+  # Used by 7 Stripe-aware handlers (cart, payment intent, refund, webhook).
+  # The Stripe secret ARN is the ONLY secret these Lambdas can read; the DB
+  # master credential and simulator credentials remain inaccessible.
+  LambdaDbWriteStripeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-db-write-stripe
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        - PolicyName: StripeSecretRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}*
+
+  # Bucket 3b — DB + Stripe secret read, NO event publishing.
+  # Used by the 3 Stripe-aware handlers that don't emit EventBridge events:
+  # create-payment-intent, create-payment-method, stripe-webhook. Identical
+  # to LambdaDbWriteStripeRole minus the events:PutEvents grant.
+  LambdaDbStripeNoEventsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-db-stripe-no-events
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: StripeSecretRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}*
+
+  # Bucket 4 — DB + EventBridge + Step Functions task tokens.
+  # Used by 5 handlers that complete or fail SFN tasks (check-in, check-out,
+  # billing event consumer, housekeeping event consumer, inspect_task). They
+  # do NOT need StartExecution — executions are started by EventBridge rules.
+  LambdaSfnTaskTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-sfn-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        - PolicyName: StepFunctionsTaskTokens
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                # Task-token actions are unscoped on the state machine — AWS
+                # accepts any active task token regardless of which state
+                # machine issued it. Resource: "*" matches AWS guidance.
+                Resource: "*"
+
+  # Bucket 4b — DB + Step Functions task tokens, NO event publishing.
+  # Used by the 2 SFN task targets that don't emit EventBridge events:
+  # complete_task, inspect_task. Identical to LambdaSfnTaskTargetRole
+  # minus the events:PutEvents grant.
+  LambdaSfnTaskOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-sfn-task-only
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: StepFunctionsTaskTokens
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: "*"
+
+  # Bucket 5a — SQS consumer for the housekeeping queue.
+  # One role per queue, scoped to that queue's ARN only.
+  LambdaSqsHousekeepingConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-sqs-housekeeping
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        - PolicyName: SqsConsume
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt EventsStack.Outputs.PmsHousekeepingQueueArn
+        - PolicyName: StartHousekeepingDispatch
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref HousekeepingDispatchStateMachine
+
+  # Bucket 5b — SQS consumer for the billing queue.
+  LambdaSqsBillingConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-sqs-billing
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        - PolicyName: SqsConsume
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt EventsStack.Outputs.PmsBillingQueueArn
+        - PolicyName: StartCheckoutBilling
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref CheckoutBillingStateMachine
+
+  # Bucket 5c — SQS consumer for the loyalty queue.
+  LambdaSqsLoyaltyConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-sqs-loyalty
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: EventBridgePut
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        - PolicyName: SqsConsume
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt EventsStack.Outputs.PmsLoyaltyQueueArn
+
+  # Bucket 6 — DB read + SES send.
+  # Used by the notifications consumer only. Scoped to the verified-domain
+  # SES identity that is the From address. SES ses:SendEmail / SendRawEmail
+  # are scoped via the ses:FromAddress condition AND the identity ARN.
+  LambdaNotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-notification
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: SqsConsume
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt EventsStack.Outputs.PmsNotificationsQueueArn
+        - PolicyName: SesSend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                # Identity ARN is scoped to the From address. SES requires
+                # the principal to control the verified identity that
+                # appears in the Source header.
+                Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/anycompanyhotels.com
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: noreply@anycompanyhotels.com
+
+  # Bucket 7 — Activity simulator only.
+  # The simulator authenticates as a dedicated Cognito user via
+  # AdminInitiateAuth, then drives the public CRS + PMS APIs. Its IAM role
+  # only needs cognito-idp:AdminInitiateAuth on the user pool, and read
+  # access to its own credentials secret.
+  LambdaSimulatorRole:
+    Type: AWS::IAM::Role
+    Condition: DeploySimulator
+    Properties:
+      RoleName: !Sub anycompany-${Environment}-lambda-simulator
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RdsProxyConnect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${ProxyId}/anycompany_admin
+                  - ProxyId: !GetAtt DatabaseStack.Outputs.DBProxyResourceId
+        - PolicyName: SimulatorCredsRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-simulator-creds-${Environment}*
+        - PolicyName: CognitoAdminInitiateAuth
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cognito-idp:AdminInitiateAuth
+                Resource: !GetAtt AuthStack.Outputs.UserPoolArn
+
+  # ── Infrastructure Stacks ──
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/vpc.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/database.yaml
+      Parameters:
+        Environment: !Ref Environment
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !GetAtt VPCStack.Outputs.PrivateSubnetIds
+        LambdaSecurityGroupId: !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        EnableDataApi: !Ref EnableDataApi
+
+  AuthStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/auth.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  EventsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/events.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  # CLOUDFRONT-scope WAF for the SPA distributions. Conditional: a CLOUDFRONT
+  # WebACL can only be created in us-east-1, so this is skipped (and the
+  # distributions deploy without it) when EnableCloudFrontWaf=false — required
+  # for any non-us-east-1 deployment.
+  WAFStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployCloudFrontWaf
+    Properties:
+      TemplateURL: stacks/waf.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  # Regional WAF for the REST API Gateways. Separate from WAFStack because
+  # WAFv2 scope is immutable: that one is CLOUDFRONT (frontends), this one is
+  # REGIONAL (the REST API stages).
+  WAFRegionalStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/waf-regional.yaml
+      Parameters:
+        Environment: !Ref Environment
+
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/frontend.yaml
+      Parameters:
+        Environment: !Ref Environment
+        DomainName: !Ref DomainName
+        # Empty string when the CloudFront WAF is disabled; frontend.yaml maps an
+        # empty value to AWS::NoValue so the distribution deploys without a WebACL.
+        WAFWebACLArn: !If [DeployCloudFrontWaf, !GetAtt WAFStack.Outputs.WebACLArn, ""]
+
+  # ── Common Layer ──
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub anycompany-common-${Environment}
+      Description: Shared utilities for AnyCompany Booking
+      ContentUri: src/layers/common/
+      CompatibleRuntimes:
+        - python3.12
+      CompatibleArchitectures:
+        - arm64
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.12
+      BuildArchitecture: arm64
+
+  # ── API Gateway ──
+  # Access-log destinations for the REST API stages (CloudWatch).
+  CrsApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/anycompany-crs-${Environment}
+      RetentionInDays: 30
+  PmsApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/anycompany-pms-${Environment}
+      RetentionInDays: 30
+
+  # CRS guest-facing API. Cognito user pool authorizer; public routes (browse,
+  # search, cart, Stripe webhook) carry Authorizer: NONE.
+  AnyCompanyApiRest:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "anycompany-crs-rest-${Environment}"
+      StageName: !Ref Environment
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt CrsApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+      EndpointConfiguration:
+        Type: REGIONAL
+      # Stripe webhooks POST a signed raw body. REST proxy integration already
+      # passes the body through verbatim as a string (the webhook handler reads
+      # event["body"] directly, with no base64 decode), so JSON must NOT be
+      # declared binary — doing so makes API Gateway base64-encode every JSON
+      # POST body and breaks handlers that json.loads(event["body"]).
+      # octet-stream documents the raw-body intent but never matches Stripe's
+      # application/json content-type, so it's an effective no-op.
+      BinaryMediaTypes:
+        - "application/octet-stream"
+      Cors:
+        AllowOrigin: !If [IsNonProd, "'*'", !Sub "'https://${PmsCloudFrontDistribution.DomainName}'"]
+        AllowHeaders: "'Authorization,Content-Type,X-Property-Id,X-Correlation-Id'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      Auth:
+        DefaultAuthorizer: CognitoUserPoolAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoUserPoolAuthorizer:
+            UserPoolArn: !GetAtt AuthStack.Outputs.UserPoolArn
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingBurstLimit: 1000
+          ThrottlingRateLimit: 500
+      # Gateway request-body validation.
+      # JSON Schema (Draft 4) models inlined from src/api_schemas/. The
+      # src files are the human-edited source + unit-tested in
+      # tests/unit/api_schemas/; these inline copies are the deployed form
+      # (SAM Models need inline schema, not file refs, without OpenAPI).
+      # Keep them in sync if a schema changes.
+      Models:
+        ReservationCreate: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["propertyId","roomTypeId","ratePlanId","checkInDate","checkOutDate","adults"],"properties":{"propertyId":{"type":"string","minLength":1},"roomTypeId":{"type":"string","minLength":1},"ratePlanId":{"type":"string","minLength":1},"checkInDate":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"checkOutDate":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"adults":{"type":"integer","minimum":1,"maximum":8},"children":{"type":"integer","minimum":0,"maximum":8},"paymentMethodId":{"type":"string"},"additionalNotes":{"type":"string","maxLength":2000},"guestInfo":{"type":"object"}}}
+        ReservationUpdate: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"checkInDate":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"checkOutDate":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"adults":{"type":"integer","minimum":1,"maximum":8},"children":{"type":"integer","minimum":0,"maximum":8},"additionalNotes":{"type":"string","maxLength":2000}}}
+        GuestCreate: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["firstName","lastName","email"],"properties":{"firstName":{"type":"string","minLength":1,"maxLength":100},"lastName":{"type":"string","minLength":1,"maxLength":100},"email":{"type":"string","minLength":3,"maxLength":254},"phone":{"type":"string","maxLength":32},"dateOfBirth":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"preferences":{"type":"object"},"commPrefs":{"type":"object"}}}
+        GuestUpdate: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"firstName":{"type":"string","minLength":1,"maxLength":100},"lastName":{"type":"string","minLength":1,"maxLength":100},"phone":{"type":"string","maxLength":32},"dateOfBirth":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"nationality":{"type":"string","maxLength":64},"language":{"type":"string","maxLength":16},"addressLine1":{"type":"string","maxLength":200},"addressLine2":{"type":"string","maxLength":200},"city":{"type":"string","maxLength":100},"state":{"type":"string","maxLength":100},"postalCode":{"type":"string","maxLength":20},"country":{"type":"string","maxLength":64},"preferences":{"type":"object"},"commPrefs":{"type":"object"}}}
+        PaymentCreateIntent: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["amount","guestId"],"properties":{"amount":{"type":"number","minimum":0,"exclusiveMinimum":true},"guestId":{"type":"string","minLength":1},"currency":{"type":"string","minLength":3,"maxLength":3},"reservationId":{"type":"string"}}}
+        PaymentConfirm: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["paymentIntentId","authorizationId"],"properties":{"paymentIntentId":{"type":"string","minLength":1},"authorizationId":{"type":"string","minLength":1}}}
+        PaymentRefund: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["reason"],"properties":{"reason":{"type":"string","minLength":1,"maxLength":500},"amount":{"type":"number","minimum":0,"exclusiveMinimum":true}}}
+        PaymentMethodCreate: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["stripePaymentMethodId"],"properties":{"stripePaymentMethodId":{"type":"string","minLength":1}}}
+        BookingCreateCart: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["propertyId","roomTypeId","ratePlanId","checkIn","checkOut","sessionId"],"properties":{"propertyId":{"type":"string","minLength":1},"roomTypeId":{"type":"string","minLength":1},"ratePlanId":{"type":"string","minLength":1},"checkIn":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"checkOut":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"sessionId":{"type":"string","minLength":1,"maxLength":256},"adults":{"type":"integer","minimum":1,"maximum":8},"children":{"type":"integer","minimum":0,"maximum":8}}}
+        BookingUpdateCart: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"roomTypeId":{"type":"string","minLength":1},"ratePlanId":{"type":"string","minLength":1},"checkIn":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"checkOut":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"},"adults":{"type":"integer","minimum":1,"maximum":8},"children":{"type":"integer","minimum":0,"maximum":8}}}
+        BookingApplyPromo: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["promoCode"],"properties":{"promoCode":{"type":"string","minLength":1,"maxLength":64}}}
+        BookingComplete: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["guestId","paymentMethodId"],"properties":{"guestId":{"type":"string","minLength":1},"paymentMethodId":{"type":"string","minLength":1},"specialRequests":{"type":"string","maxLength":2000},"guests":{"type":"array","items":{"type":"object","properties":{"firstName":{"type":"string"},"lastName":{"type":"string"},"email":{"type":"string"}}}}}}
+        StripeWebhook: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","required":["type"],"properties":{"type":{"type":"string"},"id":{"type":"string"},"data":{"type":"object"}}}
+
+  # ── Property Service ──
+  ListPropertiesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-list-properties-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ListPropertiesFunctionLogGroup
+      Handler: list_properties.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/property/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /properties
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  GetPropertyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-property-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetPropertyFunctionLogGroup
+      Handler: get_property.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/property/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /properties/{propertyId}
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  ListRoomTypesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-list-room-types-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ListRoomTypesFunctionLogGroup
+      Handler: list_room_types.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/property/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /properties/{propertyId}/room-types
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  GetRoomTypeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-room-type-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetRoomTypeFunctionLogGroup
+      Handler: get_room_type.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/property/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /properties/{propertyId}/room-types/{roomTypeId}
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  # ── CRS Service ──
+  CheckAvailabilityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-check-availability-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CheckAvailabilityFunctionLogGroup
+      Handler: check_availability.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /availability
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  CreateReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-create-reservation-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CreateReservationFunctionLogGroup
+      Handler: create_reservation.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /reservations
+            Method: POST
+            RequestModel:
+              Model: ReservationCreate
+              Required: true
+              ValidateBody: true
+
+  GetReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-reservation-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetReservationFunctionLogGroup
+      Handler: get_reservation.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /reservations/{reservationId}
+            Method: GET
+
+  ListReservationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-list-reservations-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ListReservationsFunctionLogGroup
+      Handler: list_reservations.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /reservations
+            Method: GET
+
+  UpdateReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-update-reservation-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref UpdateReservationFunctionLogGroup
+      Handler: update_reservation.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /reservations/{reservationId}
+            Method: PUT
+            RequestModel:
+              Model: ReservationUpdate
+              Required: true
+              ValidateBody: true
+
+  CancelReservationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-cancel-reservation-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CancelReservationFunctionLogGroup
+      Handler: cancel_reservation.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/crs/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /reservations/{reservationId}
+            Method: DELETE
+
+  # ── Guest Service ──
+  CreateGuestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteStripeRole.Arn
+      FunctionName: !Sub anycompany-create-guest-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CreateGuestFunctionLogGroup
+      Handler: create_guest.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/guest/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /guests
+            Method: POST
+            RequestModel:
+              Model: GuestCreate
+              Required: true
+              ValidateBody: true
+
+  GetGuestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-guest-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetGuestFunctionLogGroup
+      Handler: get_guest.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/guest/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /guests/{guestId}
+            Method: GET
+
+  UpdateGuestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-update-guest-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref UpdateGuestFunctionLogGroup
+      Handler: update_guest.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/guest/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /guests/{guestId}
+            Method: PUT
+            RequestModel:
+              Model: GuestUpdate
+              Required: true
+              ValidateBody: true
+
+  ListGuestReservationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-list-guest-reservations-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ListGuestReservationsFunctionLogGroup
+      Handler: list_guest_reservations.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/guest/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /guests/{guestId}/reservations
+            Method: GET
+
+  # ── Payment Service ──
+  CreatePaymentIntentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbStripeNoEventsRole.Arn
+      FunctionName: !Sub anycompany-create-payment-intent-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CreatePaymentIntentFunctionLogGroup
+      Handler: create_intent.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payments/intents
+            Method: POST
+            RequestModel:
+              Model: PaymentCreateIntent
+              Required: true
+              ValidateBody: true
+
+  ConfirmPaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteStripeRole.Arn
+      FunctionName: !Sub anycompany-confirm-payment-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ConfirmPaymentFunctionLogGroup
+      Handler: confirm_payment.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payments/confirm
+            Method: POST
+            RequestModel:
+              Model: PaymentConfirm
+              Required: true
+              ValidateBody: true
+
+  GetPaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-payment-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetPaymentFunctionLogGroup
+      Handler: get_payment.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payments/{paymentId}
+            Method: GET
+
+  RefundPaymentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteStripeRole.Arn
+      FunctionName: !Sub anycompany-refund-payment-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref RefundPaymentFunctionLogGroup
+      Handler: refund_payment.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payments/{paymentId}/refund
+            Method: POST
+            RequestModel:
+              Model: PaymentRefund
+              Required: true
+              ValidateBody: true
+
+  CreatePaymentMethodFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbStripeNoEventsRole.Arn
+      FunctionName: !Sub anycompany-create-payment-method-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CreatePaymentMethodFunctionLogGroup
+      Handler: create_payment_method.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payment-methods
+            Method: POST
+            RequestModel:
+              Model: PaymentMethodCreate
+              Required: true
+              ValidateBody: true
+
+  ListPaymentMethodsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-list-payment-methods-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ListPaymentMethodsFunctionLogGroup
+      Handler: list_payment_methods.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /payment-methods
+            Method: GET
+
+  StripeWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbStripeNoEventsRole.Arn
+      FunctionName: !Sub anycompany-stripe-webhook-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref StripeWebhookFunctionLogGroup
+      Handler: stripe_webhook.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/payment/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /webhooks/stripe
+            Method: POST
+            RequestModel:
+              Model: StripeWebhook
+              Required: true
+              ValidateBody: true
+            Auth:
+              Authorizer: NONE
+
+  # ── Booking Engine Service ──
+  BookingSearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-booking-search-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref BookingSearchFunctionLogGroup
+      Handler: search.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/search
+            Method: POST
+            Auth:
+              Authorizer: NONE
+
+  BookingRatesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-booking-rates-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref BookingRatesFunctionLogGroup
+      Handler: get_rates.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/rates
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  CreateCartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-create-cart-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CreateCartFunctionLogGroup
+      Handler: create_cart.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/cart
+            Method: POST
+            RequestModel:
+              Model: BookingCreateCart
+              Required: true
+              ValidateBody: true
+            Auth:
+              Authorizer: NONE
+
+  UpdateCartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-update-cart-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref UpdateCartFunctionLogGroup
+      Handler: update_cart.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/cart/{cartId}
+            Method: PUT
+            RequestModel:
+              Model: BookingUpdateCart
+              Required: true
+              ValidateBody: true
+            Auth:
+              Authorizer: NONE
+
+  ApplyPromoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-apply-promo-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref ApplyPromoFunctionLogGroup
+      Handler: apply_promo.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/cart/{cartId}/promo
+            Method: POST
+            RequestModel:
+              Model: BookingApplyPromo
+              Required: true
+              ValidateBody: true
+            Auth:
+              Authorizer: NONE
+
+  CompleteBookingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteStripeRole.Arn
+      FunctionName: !Sub anycompany-complete-booking-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref CompleteBookingFunctionLogGroup
+      Handler: complete_booking.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/booking/
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          STRIPE_SECRET_ARN: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:anycompany-booking-stripe-${Environment}
+          STRIPE_PUBLISHABLE_KEY: !Ref StripePublishableKey
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /booking/cart/{cartId}/book
+            Method: POST
+            RequestModel:
+              Model: BookingComplete
+              Required: true
+              ValidateBody: true
+
+  # ── Guest Loyalty Endpoint (CRS API) ──
+  GetGuestLoyaltyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-get-guest-loyalty-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref GetGuestLoyaltyFunctionLogGroup
+      Handler: get_loyalty.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/guest/
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AnyCompanyApiRest
+            Path: /guests/{guestId}/loyalty
+            Method: GET
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS INFRASTRUCTURE STACKS (non-Lambda resources only)
+  # ══════════════════════════════════════════════════════════════════════════════
+
+  # ── PMS staff API ──
+  # Cognito user pool authorizer; every route requires a staff JWT.
+  PmsApiRest:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "anycompany-pms-rest-${Environment}"
+      StageName: !Ref Environment
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn: !GetAtt PmsApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+      EndpointConfiguration:
+        Type: REGIONAL
+      Cors:
+        AllowOrigin: !If [IsNonProd, "'*'", !Sub "'https://${PmsCloudFrontDistribution.DomainName}'"]
+        AllowHeaders: "'Authorization,Content-Type,X-Property-Id,X-Correlation-Id'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      Auth:
+        DefaultAuthorizer: CognitoUserPoolAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoUserPoolAuthorizer:
+            UserPoolArn: !GetAtt AuthStack.Outputs.UserPoolArn
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingBurstLimit: 1000
+          ThrottlingRateLimit: 500
+      # Gateway request-body validation.
+      # Inlined Draft 4 schemas from src/api_schemas/ (source + unit-tested
+      # there; these are the deployed copies). Keep in sync.
+      Models:
+        StayCheckin: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"roomId":{"type":"string"},"notes":{"type":"string","maxLength":2000}}}
+        StayCheckout: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"expressCheckout":{"type":"boolean"}}}
+        StayRoomChange: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["newRoomId"],"properties":{"newRoomId":{"type":"string","minLength":1},"reason":{"type":"string","maxLength":500}}}
+        StayAssignRoom: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["roomId"],"properties":{"roomId":{"type":"string","minLength":1}}}
+        HousekeepingAssignTask: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["assignedTo"],"properties":{"assignedTo":{"type":"string","minLength":1,"maxLength":100}}}
+        HousekeepingCompleteTask: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"notes":{"type":"string","maxLength":2000}}}
+        HousekeepingInspectTask: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["passed"],"properties":{"passed":{"type":"boolean"},"notes":{"type":"string","maxLength":2000}}}
+        BillingPostCharge: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["amount","description"],"properties":{"amount":{"type":"number"},"description":{"type":"string","minLength":1,"maxLength":500},"chargeType":{"type":"string"},"chargeDate":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"}}}
+        BillingVoidFolio: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"reason":{"type":"string","maxLength":500}}}
+        LoyaltyAdjust: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["points","reason"],"properties":{"points":{"type":"integer"},"reason":{"type":"string","minLength":1,"maxLength":500}}}
+        LoyaltyRedeem: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"required":["points"],"properties":{"points":{"type":"integer","minimum":1},"reservationId":{"type":"string"}}}
+        AuditTrigger: {"$schema":"http://json-schema.org/draft-04/schema#","type":"object","additionalProperties":false,"properties":{"date":{"type":"string","pattern":"^\\d{4}-\\d{2}-\\d{2}$"}}}
+
+  # ── API Gateway account-level CloudWatch role (required for REST API access
+  # logging). Account-wide singleton — only one such role may be configured
+  # per account. ──
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  # ── Regional WAF associations ──
+  # Associate the regional WebACL with each REST API stage. The stage ARN
+  # uses the apigateway service ARN form (not execute-api). SAM names the
+  # implicit stage <ApiLogicalId>.Stage; we reference the API id + the
+  # Environment stage name directly. DependsOn the stage so the association
+  # is created only after the stage exists.
+  CrsRestWebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn: AnyCompanyApiRestStage
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${AnyCompanyApiRest}/stages/${Environment}
+      WebACLArn: !GetAtt WAFRegionalStack.Outputs.RegionalWebACLArn
+
+  PmsRestWebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn: PmsApiRestStage
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${PmsApiRest}/stages/${Environment}
+      WebACLArn: !GetAtt WAFRegionalStack.Outputs.RegionalWebACLArn
+
+  # ── Shared Access-Log Bucket (PMS frontend + PMS CloudFront) ──
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "anycompany-access-logs-${Environment}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub "${AccessLogsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # ── PMS Frontend (S3 + CloudFront, inlined for simplicity) ──
+  PmsFrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "s3/pms-frontend/"
+
+  PmsOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "anycompany-pms-oac-${Environment}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  PmsCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt PmsFrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref PmsOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref PmsResponseHeadersPolicy
+          Compress: true
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+        Logging:
+          Bucket: !GetAtt AccessLogsBucket.RegionalDomainName
+          Prefix: "cloudfront/pms-frontend/"
+          IncludeCookies: false
+        HttpVersion: http2and3
+        WebACLId: !If [DeployCloudFrontWaf, !GetAtt WAFStack.Outputs.WebACLArn, !Ref "AWS::NoValue"]
+
+  PmsFrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PmsFrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${PmsFrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${PmsCloudFrontDistribution}"
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt PmsFrontendBucket.Arn
+              - !Sub "${PmsFrontendBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # Security headers for the PMS SPA. Same strict enforced baseline as the CRS
+  # distribution. CSP is REPORT-ONLY first (promote to enforced after in-browser
+  # validation). The PMS frontend does NOT use Stripe, so its CSP is tighter than
+  # the CRS one — no js.stripe.com/api.stripe.com/Stripe iframes. connect-src
+  # allows only the app's own API Gateway + Cognito over HTTPS.
+  PmsResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub anycompany-pms-security-headers-${Environment}
+        Comment: Strict baseline (enforced) + CSP (report-only) for the PMS SPA
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: "camera=(), microphone=(), geolocation=(), payment=()"
+              Override: true
+            - Header: Content-Security-Policy-Report-Only
+              Value: >-
+                default-src 'self';
+                script-src 'self';
+                style-src 'self' 'unsafe-inline';
+                img-src 'self' data: https:;
+                font-src 'self' data:;
+                connect-src 'self' https://*.amazonaws.com;
+                object-src 'none';
+                base-uri 'self';
+                form-action 'self';
+                frame-ancestors 'none'
+              Override: true
+
+  # ── Analytics Pipeline ──
+  AnalyticsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: stacks/analytics.yaml
+      Parameters:
+        Environment: !Ref Environment
+        EventBusName: !GetAtt EventsStack.Outputs.EventBusName
+        EventBusArn: !GetAtt EventsStack.Outputs.EventBusArn
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS CHECK-IN/OUT SERVICE
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsCheckInFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSfnTaskTargetRole.Arn
+      FunctionName: !Sub anycompany-pms-checkin-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsCheckInFunctionLogGroup
+      Handler: check_in.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/checkinout/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /stays/{reservationId}/checkin
+            Method: POST
+            RequestModel:
+              Model: StayCheckin
+              Required: true
+              ValidateBody: true
+
+  PmsCheckOutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSfnTaskTargetRole.Arn
+      FunctionName: !Sub anycompany-pms-checkout-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsCheckOutFunctionLogGroup
+      Handler: check_out.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/checkinout/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /stays/{reservationId}/checkout
+            Method: POST
+            RequestModel:
+              Model: StayCheckout
+              Required: true
+              ValidateBody: true
+
+  PmsListStaysFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-list-stays-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsListStaysFunctionLogGroup
+      Handler: list_stays.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/checkinout/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /stays
+            Method: GET
+
+  PmsRoomChangeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-room-change-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsRoomChangeFunctionLogGroup
+      Handler: room_change.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/checkinout/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /stays/{reservationId}/room
+            Method: PUT
+            RequestModel:
+              Model: StayRoomChange
+              Required: true
+              ValidateBody: true
+
+  PmsPreAssignRoomFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-pre-assign-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsPreAssignRoomFunctionLogGroup
+      Handler: pre_assign_room.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/checkinout/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /stays/{reservationId}/assign-room
+            Method: PUT
+            RequestModel:
+              Model: StayAssignRoom
+              Required: true
+              ValidateBody: true
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS HOUSEKEEPING SERVICE
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsListTasksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-list-tasks-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsListTasksFunctionLogGroup
+      Handler: list_tasks.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/tasks
+            Method: GET
+
+  PmsGetTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-get-task-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsGetTaskFunctionLogGroup
+      Handler: get_task.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/tasks/{taskId}
+            Method: GET
+
+  PmsAssignTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-assign-task-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsAssignTaskFunctionLogGroup
+      Handler: assign_task.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/tasks/{taskId}/assign
+            Method: PUT
+            RequestModel:
+              Model: HousekeepingAssignTask
+              Required: true
+              ValidateBody: true
+
+  PmsCompleteTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSfnTaskOnlyRole.Arn
+      FunctionName: !Sub anycompany-pms-complete-task-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsCompleteTaskFunctionLogGroup
+      Handler: complete_task.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/tasks/{taskId}/complete
+            Method: POST
+            RequestModel:
+              Model: HousekeepingCompleteTask
+              Required: true
+              ValidateBody: true
+
+  PmsInspectTaskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSfnTaskOnlyRole.Arn
+      FunctionName: !Sub anycompany-pms-inspect-task-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsInspectTaskFunctionLogGroup
+      Handler: inspect_task.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/tasks/{taskId}/inspect
+            Method: POST
+            RequestModel:
+              Model: HousekeepingInspectTask
+              Required: true
+              ValidateBody: true
+
+  PmsRoomStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-room-status-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsRoomStatusFunctionLogGroup
+      Handler: room_status.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /housekeeping/rooms/summary
+            Method: GET
+
+  PmsHousekeepingEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSqsHousekeepingConsumerRole.Arn
+      FunctionName: !Sub anycompany-pms-hk-event-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsHousekeepingEventFunctionLogGroup
+      Handler: process_event.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+      Environment:
+        Variables:
+          HOUSEKEEPING_STATE_MACHINE_ARN: !Ref HousekeepingDispatchStateMachine
+      Events:
+        SQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventsStack.Outputs.PmsHousekeepingQueueArn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # --- Housekeeping Step Functions Action Lambda ---
+  PmsHousekeepingSfnFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-hk-sfn-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsHousekeepingSfnFunctionLogGroup
+      Handler: sfn_actions.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/housekeeping/
+      Layers: [!Ref CommonLayer]
+
+  # --- HousekeepingDispatch Step Functions State Machine ---
+  # Advances housekeeping tasks through their lifecycle (ASSIGNED, CLEANING,
+  # INSPECTING, INSPECTED) using task tokens kept on the task record.
+  HousekeepingDispatchStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub anycompany-pms-housekeeping-dispatch-${Environment}
+      DefinitionUri: src/state_machines/housekeeping_dispatch.asl.json
+      DefinitionSubstitutions:
+        SfnActionsFunctionArn: !GetAtt PmsHousekeepingSfnFunction.Arn
+        EventBusName: !GetAtt EventsStack.Outputs.EventBusName
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PmsHousekeepingSfnFunction
+        - EventBridgePutEventsPolicy:
+            EventBusName: !GetAtt EventsStack.Outputs.EventBusName
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS BILLING SERVICE
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsListFoliosFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-list-folios-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsListFoliosFunctionLogGroup
+      Handler: list_folios.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      MemorySize: 512
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /billing/folios
+            Method: GET
+
+  PmsGetFolioFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-get-folio-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsGetFolioFunctionLogGroup
+      Handler: get_folio.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /billing/folios/{folioId}
+            Method: GET
+
+  PmsPostChargeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-post-charge-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsPostChargeFunctionLogGroup
+      Handler: post_charge.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /billing/folios/{folioId}/charges
+            Method: POST
+            RequestModel:
+              Model: BillingPostCharge
+              Required: true
+              ValidateBody: true
+
+  PmsVoidFolioFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-void-folio-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsVoidFolioFunctionLogGroup
+      Handler: void_folio.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /billing/folios/{folioId}/void
+            Method: POST
+            RequestModel:
+              Model: BillingVoidFolio
+              Required: true
+              ValidateBody: true
+
+  PmsBillingEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSqsBillingConsumerRole.Arn
+      FunctionName: !Sub anycompany-pms-billing-event-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsBillingEventFunctionLogGroup
+      Handler: process_event.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      Layers: [!Ref CommonLayer]
+      Environment:
+        Variables:
+          BILLING_STATE_MACHINE_ARN: !Ref CheckoutBillingStateMachine
+      Events:
+        SQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventsStack.Outputs.PmsBillingQueueArn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # --- Billing Step Functions Action Lambda ---
+  PmsBillingSfnFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-billing-sfn-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsBillingSfnFunctionLogGroup
+      Handler: sfn_actions.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/billing/
+      Layers: [!Ref CommonLayer]
+      Environment:
+        Variables:
+          TAX_RATE: "0.15"
+
+  # --- CheckoutBilling Step Functions State Machine ---
+  # Closes folios after guest checkout: calculates totals, processes payment,
+  # records the payment, and marks the folio PAID. Triggered by the
+  # PmsBillingEventFunction when it receives a checkinout.checked_out event.
+  CheckoutBillingStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub anycompany-pms-checkout-billing-${Environment}
+      DefinitionUri: src/state_machines/checkout_billing.asl.json
+      DefinitionSubstitutions:
+        SfnActionsFunctionArn: !GetAtt PmsBillingSfnFunction.Arn
+        EventBusName: !GetAtt EventsStack.Outputs.EventBusName
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PmsBillingSfnFunction
+        - EventBridgePutEventsPolicy:
+            EventBusName: !GetAtt EventsStack.Outputs.EventBusName
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS LOYALTY SERVICE
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsGetLoyaltyProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-loyalty-profile-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsGetLoyaltyProfileFunctionLogGroup
+      Handler: get_profile.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/loyalty/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /loyalty/{guestId}
+            Method: GET
+
+  PmsGetLoyaltyTransactionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-loyalty-txns-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsGetLoyaltyTransactionsFunctionLogGroup
+      Handler: get_transactions.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/loyalty/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /loyalty/{guestId}/transactions
+            Method: GET
+
+  PmsAdjustPointsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-pms-loyalty-adjust-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsAdjustPointsFunctionLogGroup
+      Handler: adjust_points.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/loyalty/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /loyalty/{guestId}/adjust
+            Method: POST
+            RequestModel:
+              Model: LoyaltyAdjust
+              Required: true
+              ValidateBody: true
+
+  PmsRedeemPointsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-pms-loyalty-redeem-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsRedeemPointsFunctionLogGroup
+      Handler: redeem_points.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/loyalty/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /loyalty/{guestId}/redeem
+            Method: POST
+            RequestModel:
+              Model: LoyaltyRedeem
+              Required: true
+              ValidateBody: true
+
+  PmsLoyaltyEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaSqsLoyaltyConsumerRole.Arn
+      FunctionName: !Sub anycompany-pms-loyalty-event-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsLoyaltyEventFunctionLogGroup
+      Handler: process_event.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/loyalty/
+      Layers: [!Ref CommonLayer]
+      Events:
+        SQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventsStack.Outputs.PmsLoyaltyQueueArn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS NIGHT AUDIT & REPORTING
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsNightAuditWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-pms-night-audit-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsNightAuditWorkerFunctionLogGroup
+      Handler: worker.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/night_audit/
+      Timeout: 300
+      MemorySize: 512
+      Layers: [!Ref CommonLayer]
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(59 3 * * ? *)
+            Description: Night audit - runs nightly
+
+  PmsNightAuditTriggerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbWriteEventRole.Arn
+      FunctionName: !Sub anycompany-pms-audit-trigger-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsNightAuditTriggerFunctionLogGroup
+      Handler: trigger.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/night_audit/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /audit/runs
+            Method: POST
+            RequestModel:
+              Model: AuditTrigger
+              Required: true
+              ValidateBody: true
+
+  PmsNightAuditReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-audit-report-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsNightAuditReportFunctionLogGroup
+      Handler: get_report.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/night_audit/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /audit/reports/{propertyId}
+            Method: GET
+
+  PmsDailySummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-daily-summary-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsDailySummaryFunctionLogGroup
+      Handler: daily_summary.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/reporting/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /reporting/{propertyId}/daily
+            Method: GET
+
+  PmsOccupancyReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-occupancy-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsOccupancyReportFunctionLogGroup
+      Handler: occupancy_report.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/reporting/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /reporting/occupancy
+            Method: GET
+
+  PmsRangeMetricsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-range-metrics-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsRangeMetricsFunctionLogGroup
+      Handler: range_metrics.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/reporting/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /reporting/range
+            Method: GET
+
+  # Lists properties the authenticated staff user can access. Used by the PMS
+  # dashboard to populate the property selector for chain-level users.
+  PmsListAccessiblePropertiesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-list-properties-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsListAccessiblePropertiesFunctionLogGroup
+      Handler: list_properties.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/reporting/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /properties
+            Method: GET
+
+  PmsListGuestsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaDbReadRole.Arn
+      FunctionName: !Sub anycompany-pms-list-guests-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsListGuestsFunctionLogGroup
+      Handler: list_guests.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/reporting/
+      Layers: [!Ref CommonLayer]
+      Events:
+        ApiRest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PmsApiRest
+            Path: /guests
+            Method: GET
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # PMS NOTIFICATIONS & SIMULATOR
+  # ══════════════════════════════════════════════════════════════════════════════
+  PmsNotificationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaNotificationRole.Arn
+      FunctionName: !Sub anycompany-pms-notifications-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsNotificationsFunctionLogGroup
+      Handler: process_notification.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/notifications/
+      Layers: [!Ref CommonLayer]
+      Environment:
+        Variables:
+          SENDER_EMAIL: noreply@anycompanyhotels.com
+          NOTIFICATIONS_ENABLED: "false"
+      Events:
+        SQS:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EventsStack.Outputs.PmsNotificationsQueueArn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  # ── Simulator service identity ──
+  # The activity simulator authenticates as a dedicated Cognito user in the Admin
+  # group. The password is auto-generated and stored in Secrets Manager. The user
+  # is created in FORCE_CHANGE_PASSWORD state by CFN; scripts/finalize_simulator_user.py
+  # promotes it to CONFIRMED post-deploy via AdminSetUserPassword.
+  SimulatorCredsSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: DeploySimulator
+    Properties:
+      Name: !Sub anycompany-booking-simulator-creds-${Environment}
+      Description: Username + password for the activity simulator service user
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"simulator@anycompanyhotels.local"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  SimulatorUser:
+    Type: AWS::Cognito::UserPoolUser
+    Condition: DeploySimulator
+    Properties:
+      UserPoolId: !GetAtt AuthStack.Outputs.UserPoolId
+      Username: simulator@anycompanyhotels.local
+      MessageAction: SUPPRESS
+      UserAttributes:
+        - Name: email
+          Value: simulator@anycompanyhotels.local
+        - Name: email_verified
+          Value: "true"
+        - Name: given_name
+          Value: Activity
+        - Name: family_name
+          Value: Simulator
+
+  SimulatorUserAdminGroup:
+    Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    Condition: DeploySimulator
+    Properties:
+      UserPoolId: !GetAtt AuthStack.Outputs.UserPoolId
+      Username: !Ref SimulatorUser
+      GroupName: Admin
+
+  PmsActivitySimulatorFunction:
+    Type: AWS::Serverless::Function
+    Condition: DeploySimulator
+    Properties:
+      Role: !GetAtt LambdaSimulatorRole.Arn
+      FunctionName: !Sub anycompany-pms-simulator-${Environment}
+      LoggingConfig:
+        LogGroup: !Ref PmsActivitySimulatorFunctionLogGroup
+      Handler: simulator.handler
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt VPCStack.Outputs.LambdaSecurityGroupId
+        SubnetIds: !Split [",", !GetAtt VPCStack.Outputs.PrivateSubnetIds]
+      CodeUri: src/pms/activity_simulator/
+      Timeout: 900
+      MemorySize: 512
+      Layers: [!Ref CommonLayer]
+      Environment:
+        Variables:
+          # The simulator drives synthetic load against the same API surface
+          # real traffic uses, so it exercises the WAF + gateway validation too.
+          CRS_API_URL: !Sub "https://${AnyCompanyApiRest}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+          PMS_API_URL: !Sub "https://${PmsApiRest}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+          COGNITO_USER_POOL_ID: !GetAtt AuthStack.Outputs.UserPoolId
+          # Dedicated admin-auth client (not the public SPA client) for the
+          # simulator's ADMIN_USER_PASSWORD_AUTH flow.
+          ADMIN_AUTH_CLIENT_ID: !GetAtt AuthStack.Outputs.AdminAuthClientId
+          SIMULATOR_CREDS_SECRET_ARN: !Ref SimulatorCredsSecret
+          DB_PROXY_ENDPOINT: !GetAtt DatabaseStack.Outputs.DBProxyEndpoint
+          DB_NAME: anycompany
+          EVENT_BUS_NAME: !GetAtt EventsStack.Outputs.EventBusName
+          API_PACING_MS: "50"
+          MAX_RESERVATIONS_PER_RUN: "150"
+          MAX_INCIDENTAL_CHARGES_PER_RUN: "15"
+          MAX_CANCELLATIONS_PER_RUN: "5"
+          FORWARD_WINDOW_DAYS: "60"
+          ENVIRONMENT: !Ref Environment
+          POWERTOOLS_LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: pms-activity-simulator
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(4 hours)
+            Description: End-to-end activity simulation
+            Enabled: true
+
+
+  # --- CloudWatch log groups (explicit retention) ---
+  ListPropertiesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-list-properties-${Environment}
+      RetentionInDays: 30
+
+  GetPropertyFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-property-${Environment}
+      RetentionInDays: 30
+
+  ListRoomTypesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-list-room-types-${Environment}
+      RetentionInDays: 30
+
+  GetRoomTypeFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-room-type-${Environment}
+      RetentionInDays: 30
+
+  CheckAvailabilityFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-check-availability-${Environment}
+      RetentionInDays: 30
+
+  CreateReservationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-create-reservation-${Environment}
+      RetentionInDays: 30
+
+  GetReservationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-reservation-${Environment}
+      RetentionInDays: 30
+
+  ListReservationsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-list-reservations-${Environment}
+      RetentionInDays: 30
+
+  UpdateReservationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-update-reservation-${Environment}
+      RetentionInDays: 30
+
+  CancelReservationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-cancel-reservation-${Environment}
+      RetentionInDays: 30
+
+  CreateGuestFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-create-guest-${Environment}
+      RetentionInDays: 30
+
+  GetGuestFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-guest-${Environment}
+      RetentionInDays: 30
+
+  UpdateGuestFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-update-guest-${Environment}
+      RetentionInDays: 30
+
+  ListGuestReservationsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-list-guest-reservations-${Environment}
+      RetentionInDays: 30
+
+  CreatePaymentIntentFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-create-payment-intent-${Environment}
+      RetentionInDays: 30
+
+  ConfirmPaymentFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-confirm-payment-${Environment}
+      RetentionInDays: 30
+
+  GetPaymentFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-payment-${Environment}
+      RetentionInDays: 30
+
+  RefundPaymentFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-refund-payment-${Environment}
+      RetentionInDays: 30
+
+  CreatePaymentMethodFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-create-payment-method-${Environment}
+      RetentionInDays: 30
+
+  ListPaymentMethodsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-list-payment-methods-${Environment}
+      RetentionInDays: 30
+
+  StripeWebhookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-stripe-webhook-${Environment}
+      RetentionInDays: 90
+
+  BookingSearchFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-booking-search-${Environment}
+      RetentionInDays: 30
+
+  BookingRatesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-booking-rates-${Environment}
+      RetentionInDays: 30
+
+  CreateCartFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-create-cart-${Environment}
+      RetentionInDays: 30
+
+  UpdateCartFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-update-cart-${Environment}
+      RetentionInDays: 30
+
+  ApplyPromoFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-apply-promo-${Environment}
+      RetentionInDays: 30
+
+  CompleteBookingFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-complete-booking-${Environment}
+      RetentionInDays: 90
+
+  GetGuestLoyaltyFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-get-guest-loyalty-${Environment}
+      RetentionInDays: 30
+
+  PmsCheckInFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-checkin-${Environment}
+      RetentionInDays: 30
+
+  PmsCheckOutFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-checkout-${Environment}
+      RetentionInDays: 30
+
+  PmsListStaysFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-list-stays-${Environment}
+      RetentionInDays: 30
+
+  PmsRoomChangeFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-room-change-${Environment}
+      RetentionInDays: 30
+
+  PmsPreAssignRoomFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-pre-assign-${Environment}
+      RetentionInDays: 30
+
+  PmsListTasksFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-list-tasks-${Environment}
+      RetentionInDays: 30
+
+  PmsGetTaskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-get-task-${Environment}
+      RetentionInDays: 30
+
+  PmsAssignTaskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-assign-task-${Environment}
+      RetentionInDays: 30
+
+  PmsCompleteTaskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-complete-task-${Environment}
+      RetentionInDays: 30
+
+  PmsInspectTaskFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-inspect-task-${Environment}
+      RetentionInDays: 30
+
+  PmsRoomStatusFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-room-status-${Environment}
+      RetentionInDays: 30
+
+  PmsHousekeepingEventFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-hk-event-${Environment}
+      RetentionInDays: 30
+
+  PmsHousekeepingSfnFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-hk-sfn-${Environment}
+      RetentionInDays: 30
+
+  PmsListFoliosFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-list-folios-${Environment}
+      RetentionInDays: 30
+
+  PmsGetFolioFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-get-folio-${Environment}
+      RetentionInDays: 30
+
+  PmsPostChargeFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-post-charge-${Environment}
+      RetentionInDays: 30
+
+  PmsVoidFolioFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-void-folio-${Environment}
+      RetentionInDays: 30
+
+  PmsBillingEventFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-billing-event-${Environment}
+      RetentionInDays: 30
+
+  PmsBillingSfnFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-billing-sfn-${Environment}
+      RetentionInDays: 30
+
+  PmsGetLoyaltyProfileFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-loyalty-profile-${Environment}
+      RetentionInDays: 30
+
+  PmsGetLoyaltyTransactionsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-loyalty-txns-${Environment}
+      RetentionInDays: 30
+
+  PmsAdjustPointsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-loyalty-adjust-${Environment}
+      RetentionInDays: 30
+
+  PmsRedeemPointsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-loyalty-redeem-${Environment}
+      RetentionInDays: 30
+
+  PmsLoyaltyEventFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-loyalty-event-${Environment}
+      RetentionInDays: 30
+
+  PmsNightAuditWorkerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-night-audit-${Environment}
+      RetentionInDays: 30
+
+  PmsNightAuditTriggerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-audit-trigger-${Environment}
+      RetentionInDays: 30
+
+  PmsNightAuditReportFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-audit-report-${Environment}
+      RetentionInDays: 30
+
+  PmsDailySummaryFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-daily-summary-${Environment}
+      RetentionInDays: 30
+
+  PmsOccupancyReportFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-occupancy-${Environment}
+      RetentionInDays: 30
+
+  PmsRangeMetricsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-range-metrics-${Environment}
+      RetentionInDays: 30
+
+  PmsListAccessiblePropertiesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-list-properties-${Environment}
+      RetentionInDays: 30
+
+  PmsListGuestsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-list-guests-${Environment}
+      RetentionInDays: 30
+
+  PmsNotificationsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-notifications-${Environment}
+      RetentionInDays: 30
+
+  PmsActivitySimulatorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeploySimulator
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /aws/lambda/anycompany-pms-simulator-${Environment}
+      RetentionInDays: 30
+
+Outputs:
+  # ApiUrl / PmsApiUrl are the CRS and PMS API base URLs; consumers (tests,
+  # setup scripts) read these.
+  ApiUrl:
+    Description: CRS API Gateway URL
+    Value: !Sub "https://${AnyCompanyApiRest}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+  PmsApiUrl:
+    Description: PMS API Gateway URL
+    Value: !Sub "https://${PmsApiRest}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !GetAtt AuthStack.Outputs.UserPoolId
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !GetAtt AuthStack.Outputs.UserPoolClientId
+  AdminAuthClientId:
+    Description: Cognito client ID for server-side ADMIN_USER_PASSWORD_AUTH (simulator + test harnesses)
+    Value: !GetAtt AuthStack.Outputs.AdminAuthClientId
+  M2MClientId:
+    Description: M2M Client ID for service-to-service auth
+    Value: !GetAtt AuthStack.Outputs.M2MClientId
+  CloudFrontUrl:
+    Description: CRS Frontend CloudFront URL
+    Value: !GetAtt FrontendStack.Outputs.CloudFrontUrl
+  PmsCloudFrontUrl:
+    Description: PMS Staff Dashboard URL
+    Value: !Sub "https://${PmsCloudFrontDistribution.DomainName}"
+  PmsFrontendBucketName:
+    Description: PMS Frontend S3 Bucket
+    Value: !Ref PmsFrontendBucket
+  PmsCloudFrontDistributionId:
+    Description: PMS CloudFront Distribution ID
+    Value: !Ref PmsCloudFrontDistribution
+  FrontendBucket:
+    Description: CRS Frontend S3 Bucket
+    Value: !GetAtt FrontendStack.Outputs.FrontendBucketName
+  DBProxyHost:
+    Description: RDS Proxy Endpoint
+    Value: !GetAtt DatabaseStack.Outputs.DBProxyEndpoint
+  DBClusterArn:
+    Description: Aurora cluster ARN (for use with the RDS Data API)
+    Value: !GetAtt DatabaseStack.Outputs.DBClusterArn
+  DBSecretArn:
+    Description: ARN of the database master credentials secret
+    Value: !GetAtt DatabaseStack.Outputs.DBSecretArn

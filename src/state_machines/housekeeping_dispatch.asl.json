@@ -1,0 +1,150 @@
+{
+  "Comment": "Housekeeping Dispatch - manages room cleaning lifecycle with human-in-the-loop",
+  "StartAt": "UpdateRoomToCleaning",
+  "States": {
+    "UpdateRoomToCleaning": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "update_room_to_cleaning",
+          "taskId.$": "$.taskId",
+          "roomId.$": "$.roomId"
+        }
+      },
+      "ResultPath": "$.roomUpdateResult",
+      "Next": "WaitForCleaningComplete"
+    },
+    "WaitForCleaningComplete": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "store_cleaning_token",
+          "taskId.$": "$.taskId",
+          "roomId.$": "$.roomId",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 86400,
+      "ResultPath": "$.cleaningResult",
+      "Next": "RecordCleaningComplete"
+    },
+    "RecordCleaningComplete": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "record_cleaning_complete",
+          "taskId.$": "$.taskId"
+        }
+      },
+      "ResultPath": "$.recordResult",
+      "Next": "UpdateRoomToInspecting"
+    },
+    "UpdateRoomToInspecting": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "update_room_to_inspecting",
+          "taskId.$": "$.taskId",
+          "roomId.$": "$.roomId"
+        }
+      },
+      "ResultPath": "$.inspectingResult",
+      "Next": "WaitForInspection"
+    },
+    "WaitForInspection": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "store_inspection_token",
+          "taskId.$": "$.taskId",
+          "roomId.$": "$.roomId",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 18000,
+      "ResultPath": "$.inspectionResult",
+      "Next": "InspectionDecision",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "Next": "AutoApproveInspection",
+          "ResultPath": "$.timeoutError"
+        }
+      ]
+    },
+    "AutoApproveInspection": {
+      "Type": "Pass",
+      "Result": {"passed": true},
+      "ResultPath": "$.inspectionResult",
+      "Next": "InspectionDecision"
+    },
+    "InspectionDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.inspectionResult.passed",
+          "BooleanEquals": true,
+          "Next": "RecordInspectionComplete"
+        }
+      ],
+      "Default": "UpdateRoomToCleaning"
+    },
+    "RecordInspectionComplete": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "record_inspection_complete",
+          "taskId.$": "$.taskId"
+        }
+      },
+      "ResultPath": "$.inspectionRecordResult",
+      "Next": "UpdateRoomToAvailable"
+    },
+    "UpdateRoomToAvailable": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "update_room_to_available",
+          "taskId.$": "$.taskId",
+          "roomId.$": "$.roomId"
+        }
+      },
+      "ResultPath": "$.availableResult",
+      "Next": "PublishRoomReady"
+    },
+    "PublishRoomReady": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "anycompany.housekeeping",
+            "DetailType": "housekeeping.room_ready",
+            "EventBusName": "${EventBusName}",
+            "Detail": {
+              "taskId.$": "$.taskId",
+              "roomId.$": "$.roomId",
+              "propertyId.$": "$.propertyId",
+              "roomNumber.$": "$.roomNumber"
+            }
+          }
+        ]
+      },
+      "End": true
+    }
+  }
+}

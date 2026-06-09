@@ -1,0 +1,160 @@
+{
+  "Comment": "Checkout Billing - calculates totals, processes payment, records result",
+  "StartAt": "CalculateTotals",
+  "States": {
+    "CalculateTotals": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "calculate_totals",
+          "reservationId.$": "$.reservationId",
+          "propertyId.$": "$.propertyId",
+          "guestId.$": "$.guestId"
+        }
+      },
+      "ResultSelector": {
+        "folioId.$": "$.Payload.folioId",
+        "subtotal.$": "$.Payload.subtotal",
+        "taxAmount.$": "$.Payload.taxAmount",
+        "totalAmount.$": "$.Payload.totalAmount",
+        "reservationId.$": "$.Payload.reservationId"
+      },
+      "ResultPath": "$.billing",
+      "Next": "ProcessPayment"
+    },
+    "ProcessPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "process_payment",
+          "folioId.$": "$.billing.folioId",
+          "totalAmount.$": "$.billing.totalAmount",
+          "reservationId.$": "$.billing.reservationId"
+        }
+      },
+      "ResultSelector": {
+        "paymentIntentId.$": "$.Payload.paymentIntentId",
+        "amount.$": "$.Payload.amount",
+        "status.$": "$.Payload.status",
+        "folioId.$": "$.Payload.folioId",
+        "reservationId.$": "$.Payload.reservationId"
+      },
+      "ResultPath": "$.payment",
+      "Retry": [
+        {
+          "ErrorEquals": ["TransientError", "Lambda.ServiceException"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandlePaymentFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "RecordPayment"
+    },
+    "RecordPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "record_payment",
+          "folioId.$": "$.payment.folioId",
+          "amount.$": "$.payment.amount",
+          "paymentIntentId.$": "$.payment.paymentIntentId",
+          "reservationId.$": "$.payment.reservationId"
+        }
+      },
+      "ResultPath": "$.paymentRecord",
+      "Next": "UpdateFolioPaid"
+    },
+    "UpdateFolioPaid": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "update_folio_paid",
+          "folioId.$": "$.payment.folioId",
+          "reservationId.$": "$.payment.reservationId"
+        }
+      },
+      "ResultPath": "$.folioUpdate",
+      "Next": "PublishPaymentProcessed"
+    },
+    "PublishPaymentProcessed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "anycompany.billing",
+            "DetailType": "billing.payment_processed",
+            "EventBusName": "${EventBusName}",
+            "Detail": {
+              "reservationId.$": "$.payment.reservationId",
+              "folioId.$": "$.payment.folioId",
+              "amount.$": "$.payment.amount",
+              "propertyId.$": "$.propertyId",
+              "guestId.$": "$.guestId"
+            }
+          }
+        ]
+      },
+      "Next": "BillingComplete"
+    },
+    "BillingComplete": {
+      "Type": "Succeed"
+    },
+    "HandlePaymentFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SfnActionsFunctionArn}",
+        "Payload": {
+          "action": "mark_payment_failed",
+          "folioId.$": "$.billing.folioId",
+          "reservationId.$": "$.billing.reservationId",
+          "error.$": "$.error"
+        }
+      },
+      "ResultPath": "$.failureResult",
+      "Next": "PublishPaymentFailed"
+    },
+    "PublishPaymentFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "anycompany.billing",
+            "DetailType": "billing.payment_failed",
+            "EventBusName": "${EventBusName}",
+            "Detail": {
+              "reservationId.$": "$.billing.reservationId",
+              "folioId.$": "$.billing.folioId",
+              "propertyId.$": "$.propertyId",
+              "guestId.$": "$.guestId",
+              "error.$": "$.error"
+            }
+          }
+        ]
+      },
+      "Next": "BillingFailed"
+    },
+    "BillingFailed": {
+      "Type": "Fail",
+      "Error": "PaymentFailed",
+      "Cause": "Payment processing failed after retries"
+    }
+  }
+}

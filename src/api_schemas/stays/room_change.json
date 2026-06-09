@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "RoomChange",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["newRoomId"],
+  "properties": {
+    "newRoomId": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "maxLength": 500 }
+  }
+}

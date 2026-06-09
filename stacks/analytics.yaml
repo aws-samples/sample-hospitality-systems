@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - Analytics Pipeline.
+  Captures all EventBridge events into S3 (Parquet) via Kinesis Firehose
+  for querying with Athena.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  EventBusName:
+    Type: String
+    Description: EventBridge bus name to capture events from
+  EventBusArn:
+    Type: String
+    Description: EventBridge bus ARN
+
+Resources:
+  ##############################################################################
+  # S3 Access-Log Bucket (local to this stack — nested stacks cannot reference
+  # root-template resources directly)
+  ##############################################################################
+  AnalyticsAccessLogsBucket:
+    Type: AWS::S3::Bucket
+    # Sample default: delete with the stack. Teardown must empty the bucket first
+    # (including object versions) — see scripts/teardown.sh. PRODUCTION should set
+    # this back to `Retain` to preserve access logs.
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "anycompany-analytics-logs-${Environment}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # S3 Bucket for Analytics Data
+  ##############################################################################
+  AnalyticsBucket:
+    Type: AWS::S3::Bucket
+    # Sample default: delete with the stack. Teardown must empty the bucket first
+    # (including object versions) — see scripts/teardown.sh. PRODUCTION should set
+    # this back to `Retain` to preserve analytics data.
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "anycompany-analytics-${Environment}-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AnalyticsAccessLogsBucket
+        LogFilePrefix: "s3/analytics/"
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Prefix: events/
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+              - StorageClass: GLACIER
+                TransitionInDays: 365
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # S3 Bucket Policies
+  ##############################################################################
+  AnalyticsAccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AnalyticsAccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AnalyticsAccessLogsBucket.Arn
+              - !Sub "${AnalyticsAccessLogsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  AnalyticsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AnalyticsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AnalyticsBucket.Arn
+              - !Sub "${AnalyticsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  ##############################################################################
+  # Glue Database & Table
+  ##############################################################################
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub "anycompany_analytics_${Environment}"
+        Description: AnyCompany Hotel analytics event store
+
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: events
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          projection.enabled: "true"
+          projection.source_partition.type: enum
+          projection.source_partition.values: "crs,pms,billing,loyalty,housekeeping,audit,payment"
+          projection.year.type: integer
+          projection.year.range: "2024,2030"
+          projection.month.type: integer
+          projection.month.range: "1,12"
+          projection.month.digits: "2"
+          projection.day.type: integer
+          projection.day.range: "1,31"
+          projection.day.digits: "2"
+          storage.location.template: !Sub "s3://${AnalyticsBucket}/events/source=${!source_partition}/year=${!year}/month=${!month}/day=${!day}/"
+        StorageDescriptor:
+          Location: !Sub "s3://${AnalyticsBucket}/events/"
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: event_id
+              Type: string
+            - Name: source
+              Type: string
+            - Name: detail_type
+              Type: string
+            - Name: event_time
+              Type: string
+            - Name: region
+              Type: string
+            - Name: account
+              Type: string
+            - Name: detail
+              Type: string
+        PartitionKeys:
+          - Name: source_partition
+            Type: string
+          - Name: year
+            Type: int
+          - Name: month
+            Type: int
+          - Name: day
+            Type: int
+
+  ##############################################################################
+  # Athena Workgroup
+  ##############################################################################
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub "anycompany-analytics-${Environment}"
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${AnalyticsBucket}/athena-results/"
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true
+        EngineVersion:
+          SelectedEngineVersion: Athena engine version 3
+
+  ##############################################################################
+  # Kinesis Firehose Delivery Stream
+  ##############################################################################
+  FirehoseDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub "anycompany-analytics-${Environment}"
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt AnalyticsBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 64
+        Prefix: "events/source=!{partitionKeyFromQuery:source}/year=!{partitionKeyFromQuery:year}/month=!{partitionKeyFromQuery:month}/day=!{partitionKeyFromQuery:day}/"
+        ErrorOutputPrefix: "errors/"
+        DataFormatConversionConfiguration:
+          Enabled: true
+          InputFormatConfiguration:
+            Deserializer:
+              OpenXJsonSerDe: {}
+          OutputFormatConfiguration:
+            Serializer:
+              ParquetSerDe:
+                Compression: SNAPPY
+          SchemaConfiguration:
+            DatabaseName: !Ref GlueDatabase
+            TableName: !Ref GlueTable
+            RoleARN: !GetAtt FirehoseRole.Arn
+        DynamicPartitioningConfiguration:
+          Enabled: true
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: MetadataExtraction
+              Parameters:
+                - ParameterName: MetadataExtractionQuery
+                  ParameterValue: '{source: .source | sub("^anycompany\\."; ""), year: .event_time[0:4], month: .event_time[5:7], day: .event_time[8:10]}'
+                - ParameterName: JsonParsingEngine
+                  ParameterValue: JQ-1.6
+
+  ##############################################################################
+  # IAM Roles
+  ##############################################################################
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "anycompany-firehose-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt AnalyticsBucket.Arn
+                  - !Sub "${AnalyticsBucket.Arn}/*"
+        - PolicyName: FirehoseGlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabase}"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabase}/*"
+        - PolicyName: FirehoseLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  EventBridgeToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "anycompany-eb-to-firehose-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PutFirehose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt FirehoseDeliveryStream.Arn
+
+  ##############################################################################
+  # EventBridge Rule: All events → Firehose
+  ##############################################################################
+  AllEventsToFirehoseRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "all-events-to-analytics-${Environment}"
+      EventBusName: !Ref EventBusName
+      EventPattern:
+        source:
+          - prefix: "anycompany."
+      Targets:
+        - Id: FirehoseTarget
+          Arn: !GetAtt FirehoseDeliveryStream.Arn
+          RoleArn: !GetAtt EventBridgeToFirehoseRole.Arn
+          InputTransformer:
+            InputPathsMap:
+              id: "$.id"
+              source: "$.source"
+              detailType: "$.detail-type"
+              time: "$.time"
+              region: "$.region"
+              account: "$.account"
+              detail: "$.detail"
+            InputTemplate: '{"event_id":"<id>","source":"<source>","detail_type":"<detailType>","event_time":"<time>","region":"<region>","account":"<account>","detail":<detail>}'
+
+Outputs:
+  AnalyticsBucketName:
+    Description: S3 bucket for analytics data
+    Value: !Ref AnalyticsBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-AnalyticsBucketName
+
+  FirehoseStreamName:
+    Description: Kinesis Firehose delivery stream name
+    Value: !Ref FirehoseDeliveryStream
+    Export:
+      Name: !Sub ${AWS::StackName}-FirehoseStreamName
+
+  GlueDatabaseName:
+    Description: Glue database name
+    Value: !Ref GlueDatabase
+    Export:
+      Name: !Sub ${AWS::StackName}-GlueDatabaseName
+
+  AthenaWorkgroupName:
+    Description: Athena workgroup name
+    Value: !Ref AthenaWorkgroup
+    Export:
+      Name: !Sub ${AWS::StackName}-AthenaWorkgroupName

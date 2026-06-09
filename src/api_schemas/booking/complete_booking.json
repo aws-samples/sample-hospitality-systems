@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "CompleteBooking",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["guestId", "paymentMethodId"],
+  "properties": {
+    "guestId": { "type": "string", "minLength": 1 },
+    "paymentMethodId": { "type": "string", "minLength": 1 },
+    "specialRequests": { "type": "string", "maxLength": 2000 },
+    "guests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "firstName": { "type": "string" },
+          "lastName": { "type": "string" },
+          "email": { "type": "string" }
+        }
+      }
+    }
+  }
+}

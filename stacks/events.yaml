@@ -1,0 +1,417 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - EventBridge custom event bus with dead letter queue
+  and event archive for the domain event backbone.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  ##############################################################################
+  # Custom EventBridge Bus
+  ##############################################################################
+  AnyCompanyEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub anycompany-events-${Environment}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # Dead Letter Queue (SQS)
+  ##############################################################################
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub anycompany-${Environment}-events-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 300
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DeadLetterQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${AnyCompanyEventBus}/*
+
+  ##############################################################################
+  # Event Archive (30-day retention)
+  ##############################################################################
+  EventArchive:
+    Type: AWS::Events::Archive
+    Properties:
+      ArchiveName: !Sub anycompany-${Environment}-archive
+      SourceArn: !GetAtt AnyCompanyEventBus.Arn
+      Description: !Sub Archive of all AnyCompany ${Environment} domain events
+      EventPattern:
+        source:
+          - prefix: anycompany
+      RetentionDays: 30
+
+  ##############################################################################
+  # PMS SQS Queues + DLQs
+  ##############################################################################
+
+  # --- Housekeeping Queue ---
+  PmsHousekeepingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-housekeeping-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  PmsHousekeepingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-housekeeping-${Environment}"
+      VisibilityTimeout: 180
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PmsHousekeepingDLQ.Arn
+        maxReceiveCount: 3
+
+  PmsHousekeepingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PmsHousekeepingQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt PmsHousekeepingQueue.Arn
+
+  # --- Billing Queue ---
+  PmsBillingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-billing-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  PmsBillingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-billing-${Environment}"
+      VisibilityTimeout: 180
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PmsBillingDLQ.Arn
+        maxReceiveCount: 3
+
+  PmsBillingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PmsBillingQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt PmsBillingQueue.Arn
+
+  # --- Loyalty Queue ---
+  PmsLoyaltyDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-loyalty-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  PmsLoyaltyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-loyalty-${Environment}"
+      VisibilityTimeout: 180
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PmsLoyaltyDLQ.Arn
+        maxReceiveCount: 3
+
+  PmsLoyaltyQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PmsLoyaltyQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt PmsLoyaltyQueue.Arn
+
+  # --- Notifications Queue ---
+  PmsNotificationsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-notifications-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  PmsNotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "pms-notifications-${Environment}"
+      VisibilityTimeout: 180
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PmsNotificationsDLQ.Arn
+        maxReceiveCount: 3
+
+  PmsNotificationsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PmsNotificationsQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt PmsNotificationsQueue.Arn
+
+  ##############################################################################
+  # PMS EventBridge Rules
+  ##############################################################################
+
+  # CRS reservation events → Housekeeping
+  CrsToHousekeepingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "crs-to-housekeeping-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.reservations", "anycompany.crs"]
+        detail-type: ["reservation.created", "reservation.confirmed", "reservation.cancelled"]
+      Targets:
+        - Id: HousekeepingQueue
+          Arn: !GetAtt PmsHousekeepingQueue.Arn
+
+  # PMS checkout → Housekeeping
+  CheckoutToHousekeepingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "checkout-to-housekeeping-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.pms"]
+        detail-type: ["checkinout.checked_out"]
+      Targets:
+        - Id: HousekeepingQueue
+          Arn: !GetAtt PmsHousekeepingQueue.Arn
+
+  # CRS reservation events → Billing
+  CrsToBillingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "crs-to-billing-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.reservations", "anycompany.crs"]
+        detail-type: ["reservation.created", "reservation.confirmed", "reservation.cancelled"]
+      Targets:
+        - Id: BillingQueue
+          Arn: !GetAtt PmsBillingQueue.Arn
+
+  # PMS checkout → Billing
+  CheckoutToBillingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "checkout-to-billing-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.pms"]
+        detail-type: ["checkinout.checked_out"]
+      Targets:
+        - Id: BillingQueue
+          Arn: !GetAtt PmsBillingQueue.Arn
+
+  # Billing payment → Loyalty
+  BillingToLoyaltyRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "billing-to-loyalty-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.billing"]
+        detail-type: ["billing.payment_processed"]
+      Targets:
+        - Id: LoyaltyQueue
+          Arn: !GetAtt PmsLoyaltyQueue.Arn
+
+  # Multiple sources → Notifications
+  PmsToNotificationsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "pms-to-notifications-${Environment}"
+      EventBusName: !Ref AnyCompanyEventBus
+      EventPattern:
+        source: ["anycompany.reservations", "anycompany.crs", "anycompany.pms", "anycompany.billing", "anycompany.loyalty"]
+        detail-type:
+          - "reservation.created"
+          - "reservation.confirmed"
+          - "checkinout.checked_in"
+          - "checkinout.checked_out"
+          - "billing.payment_processed"
+          - "loyalty.tier_changed"
+      Targets:
+        - Id: NotificationsQueue
+          Arn: !GetAtt PmsNotificationsQueue.Arn
+
+  ##############################################################################
+  # DLQ CloudWatch Alarms
+  ##############################################################################
+  HousekeepingDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "pms-housekeeping-dlq-${Environment}"
+      AlarmDescription: Messages in Housekeeping DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PmsHousekeepingDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+  BillingDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "pms-billing-dlq-${Environment}"
+      AlarmDescription: Messages in Billing DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PmsBillingDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+  LoyaltyDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "pms-loyalty-dlq-${Environment}"
+      AlarmDescription: Messages in Loyalty DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PmsLoyaltyDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+  NotificationsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "pms-notifications-dlq-${Environment}"
+      AlarmDescription: Messages in Notifications DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PmsNotificationsDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+
+Outputs:
+  EventBusName:
+    Description: Custom EventBridge bus name
+    Value: !Ref AnyCompanyEventBus
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusName
+
+  EventBusArn:
+    Description: Custom EventBridge bus ARN
+    Value: !GetAtt AnyCompanyEventBus.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-EventBusArn
+
+  DeadLetterQueueUrl:
+    Description: SQS dead letter queue URL for failed events
+    Value: !Ref DeadLetterQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-DeadLetterQueueUrl
+
+  PmsHousekeepingQueueArn:
+    Description: PMS Housekeeping SQS queue ARN
+    Value: !GetAtt PmsHousekeepingQueue.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsHousekeepingQueueArn
+
+  PmsHousekeepingQueueUrl:
+    Description: PMS Housekeeping SQS queue URL
+    Value: !Ref PmsHousekeepingQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsHousekeepingQueueUrl
+
+  PmsBillingQueueArn:
+    Description: PMS Billing SQS queue ARN
+    Value: !GetAtt PmsBillingQueue.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsBillingQueueArn
+
+  PmsBillingQueueUrl:
+    Description: PMS Billing SQS queue URL
+    Value: !Ref PmsBillingQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsBillingQueueUrl
+
+  PmsLoyaltyQueueArn:
+    Description: PMS Loyalty SQS queue ARN
+    Value: !GetAtt PmsLoyaltyQueue.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsLoyaltyQueueArn
+
+  PmsLoyaltyQueueUrl:
+    Description: PMS Loyalty SQS queue URL
+    Value: !Ref PmsLoyaltyQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsLoyaltyQueueUrl
+
+  PmsNotificationsQueueArn:
+    Description: PMS Notifications SQS queue ARN
+    Value: !GetAtt PmsNotificationsQueue.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsNotificationsQueueArn
+
+  PmsNotificationsQueueUrl:
+    Description: PMS Notifications SQS queue URL
+    Value: !Ref PmsNotificationsQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-PmsNotificationsQueueUrl

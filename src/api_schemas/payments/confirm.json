@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "ConfirmPayment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["paymentIntentId", "authorizationId"],
+  "properties": {
+    "paymentIntentId": { "type": "string", "minLength": 1 },
+    "authorizationId": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "CreatePaymentIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["amount", "guestId"],
+  "properties": {
+    "amount": { "type": "number", "minimum": 0, "exclusiveMinimum": true },
+    "guestId": { "type": "string", "minLength": 1 },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "reservationId": { "type": "string" }
+  }
+}

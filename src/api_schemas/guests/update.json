@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "UpdateGuest",
+  "type": "object",
+  "additionalProperties": false,
+  "comment": "email and cognitoSub are intentionally NOT allowed — the handler rejects attempts to change them. Only the ALLOWED_FIELDS set is updatable.",
+  "properties": {
+    "firstName": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "lastName": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "phone": { "type": "string", "maxLength": 32 },
+    "dateOfBirth": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "nationality": { "type": "string", "maxLength": 64 },
+    "language": { "type": "string", "maxLength": 16 },
+    "addressLine1": { "type": "string", "maxLength": 200 },
+    "addressLine2": { "type": "string", "maxLength": 200 },
+    "city": { "type": "string", "maxLength": 100 },
+    "state": { "type": "string", "maxLength": 100 },
+    "postalCode": { "type": "string", "maxLength": 20 },
+    "country": { "type": "string", "maxLength": 64 },
+    "preferences": { "type": "object" },
+    "commPrefs": { "type": "object" }
+  }
+}

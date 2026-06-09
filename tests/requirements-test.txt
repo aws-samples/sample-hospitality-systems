@@ -1,0 +1,16 @@
+# Test-only dependencies for the AnyCompany Hotels backend test suite.
+#
+# Install into a Python 3.12 venv (matches the Lambda runtime):
+#   python3.12 -m venv .venv-test
+#   .venv-test/bin/pip install -r tests/requirements-test.txt
+#   .venv-test/bin/pip install -r src/layers/common/requirements.txt
+#
+# The Makefile target `make install-test` automates this.
+
+pytest>=8.0,<9.0
+pytest-cov>=5.0,<6.0
+pytest-mock>=3.14,<4.0
+hypothesis>=6.100,<7.0
+# Validates the API Gateway request-model JSON Schemas (src/api_schemas/) are
+# themselves well-formed Draft 4 documents. Used by tests/unit/api_schemas/.
+jsonschema>=4.20,<5.0

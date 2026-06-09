@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - WAF WebACL (CLOUDFRONT scope) with AWS Managed Rules
+  and rate limiting for the frontend distribution.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  ##############################################################################
+  # WAF WebACL
+  ##############################################################################
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub anycompany-${Environment}-web-acl
+      Scope: CLOUDFRONT
+      Description: !Sub WAF WebACL for AnyCompany ${Environment} CloudFront distribution
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub anycompany-${Environment}-web-acl
+      Rules:
+        ##################################################################
+        # AWS Managed Rules — Common Rule Set
+        # Broad coverage: OWASP Top 10 categories, suspicious request bodies,
+        # generic bot signatures.
+        ##################################################################
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-common-rules
+
+        ##################################################################
+        # AWS Managed Rules — Known Bad Inputs
+        # Catches malformed payloads and exploit-pattern probes.
+        ##################################################################
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-bad-inputs
+
+        ##################################################################
+        # AWS Managed Rules — SQL injection
+        # Defense in depth on top of parameterized queries — the booking
+        # and PMS APIs touch Aurora through psycopg with parameterized
+        # statements, but a misconfigured handler is one PR away.
+        ##################################################################
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-sqli
+
+        ##################################################################
+        # AWS Managed Rules — Amazon IP Reputation
+        # Blocks IPs Amazon has identified as the source of attacks. Free
+        # add-on; reduces background noise from credential-stuffing botnets
+        # before our custom rate limit even sees them.
+        ##################################################################
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 4
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-ip-reputation
+
+        ##################################################################
+        # Rate Limiting — global per-IP fallback for CloudFront-fronted
+        # traffic (the frontend SPAs). The API Gateway stages are protected
+        # separately by the regional WebACL in waf-regional.yaml, so this
+        # CloudFront-scope ACL only needs to cover the static frontends.
+        ##################################################################
+        - Name: RateLimitPerIP
+          Priority: 5
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub anycompany-${Environment}-rate-limit
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  WebACLArn:
+    Description: WAF WebACL ARN for CloudFront association
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-WebACLArn

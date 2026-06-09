@@ -1,0 +1,279 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - S3 static hosting bucket with CloudFront distribution,
+  Origin Access Control, SPA error handling, and WAF association.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  DomainName:
+    Type: String
+    Description: Domain name for the frontend (e.g., www.anycompanyhotels.com)
+    Default: ''
+
+  WAFWebACLArn:
+    Type: String
+    Description: >
+      ARN of the CLOUDFRONT-scope WAF WebACL to associate with the distribution.
+      Empty string = no WAF (used for non-us-east-1 deploys where a CLOUDFRONT
+      WebACL can't exist).
+    Default: ''
+
+Conditions:
+  HasWafAcl: !Not [!Equals [!Ref WAFWebACLArn, '']]
+
+Resources:
+  ##############################################################################
+  # S3 Access-Log Bucket (local to this stack — nested stacks cannot reference
+  # root-template resources directly)
+  ##############################################################################
+  FrontendAccessLogsBucket:
+    Type: AWS::S3::Bucket
+    # Sample default: delete with the stack. Teardown must empty the bucket first
+    # (including object versions) — see scripts/teardown.sh. PRODUCTION should set
+    # both back to `Retain` to preserve access logs.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub anycompany-${Environment}-frontend-logs-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  FrontendAccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendAccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt FrontendAccessLogsBucket.Arn
+              - !Sub ${FrontendAccessLogsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  ##############################################################################
+  # S3 Bucket — Static Website Assets
+  ##############################################################################
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    # Sample default: delete with the stack. Teardown must empty the bucket first
+    # (including object versions) — see scripts/teardown.sh. PRODUCTION should set
+    # both back to `Retain`.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub anycompany-${Environment}-frontend-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref FrontendAccessLogsBucket
+        LogFilePrefix: "s3/crs-frontend/"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ##############################################################################
+  # S3 Bucket Policy — Allow CloudFront OAC
+  ##############################################################################
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt FrontendBucket.Arn
+              - !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  ##############################################################################
+  # CloudFront Origin Access Control
+  ##############################################################################
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub anycompany-${Environment}-oac
+        Description: !Sub OAC for AnyCompany ${Environment} frontend bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ##############################################################################
+  # CloudFront Distribution
+  ##############################################################################
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub AnyCompany Hotel ${Environment} frontend
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        WebACLId: !If [HasWafAcl, !Ref WAFWebACLArn, !Ref "AWS::NoValue"]
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          ResponseHeadersPolicyId: !Ref CrsResponseHeadersPolicy
+          Compress: true
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 10
+        Logging:
+          Bucket: !GetAtt FrontendAccessLogsBucket.RegionalDomainName
+          Prefix: "cloudfront/crs-frontend/"
+          IncludeCookies: false
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security headers for the CRS SPA. The non-CSP headers are ENFORCED (they
+  # don't affect application behavior). The CSP ships REPORT-ONLY first: the
+  # browser reports violations without blocking, so the policy can be validated
+  # against the real Stripe Elements flow before promoting it to enforced
+  # (move the policy from ContentSecurityPolicy under a report-only field to the
+  # enforced SecurityHeadersConfig.ContentSecurityPolicy once validated).
+  #
+  # CSP notes: Stripe Elements needs script-src js.stripe.com, frame-src
+  # js.stripe.com + hooks.stripe.com (the card iframe), and connect-src
+  # api.stripe.com. connect-src also allows the app's own API Gateway + Cognito
+  # (HTTPS). Vite-built assets need style-src 'unsafe-inline'.
+  CrsResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub anycompany-crs-security-headers-${Environment}
+        Comment: Strict baseline (enforced) + CSP (report-only) for the CRS SPA
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: "camera=(), microphone=(), geolocation=(), payment=()"
+              Override: true
+            # CSP in REPORT-ONLY mode: violations are reported by the browser but
+            # NOT blocked, so a too-tight rule can't break checkout. Promote to an
+            # enforced `Content-Security-Policy` header after validating in-browser.
+            - Header: Content-Security-Policy-Report-Only
+              Value: >-
+                default-src 'self';
+                script-src 'self' https://js.stripe.com;
+                style-src 'self' 'unsafe-inline';
+                img-src 'self' data: https:;
+                font-src 'self' data:;
+                connect-src 'self' https://api.stripe.com https://*.amazonaws.com;
+                frame-src https://js.stripe.com https://hooks.stripe.com;
+                object-src 'none';
+                base-uri 'self';
+                form-action 'self';
+                frame-ancestors 'none'
+              Override: true
+
+Outputs:
+  CloudFrontUrl:
+    Description: CloudFront distribution URL
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+    Export:
+      Name: !Sub ${AWS::StackName}-CloudFrontUrl
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub ${AWS::StackName}-CloudFrontDistributionId
+
+  FrontendBucketName:
+    Description: S3 bucket name for frontend assets
+    Value: !Ref FrontendBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-FrontendBucketName

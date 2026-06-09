@@ -1,0 +1,52 @@
+# Test + tooling configuration for the AnyCompany Hotels backend.
+#
+# This file is intentionally test-focused — the application itself is not a
+# pip-installable package; Lambda handlers are deployed via SAM. pytest reads
+# its config from here, and `pythonpath` removes the previous reliance on an
+# externally-set PYTHONPATH to resolve `import utils.*`.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+
+# Resolve the shared Lambda layer (`import utils.*`, `import models.*`) without
+# requiring the caller to export PYTHONPATH. Handler-specific CodeUri dirs are
+# added per-test via tests/conftest.py.
+pythonpath = [
+    "src/layers/common",
+]
+
+# Markers gate the stack-dependent layers so the default `pytest` run stays
+# fast, offline, and creds-free. The Makefile maps each marker to a target.
+markers = [
+    "unit: fast, offline, no AWS/DB (default inner-loop suite)",
+    "integration: runs against the real dev stack (needs AWS creds)",
+    "contract: API contract capture/verify (needs creds + deployed API)",
+    "e2e: full-flow backend journeys against the dev stack (needs creds)",
+]
+
+# By default, run only unit tests. Stack-dependent layers are opt-in via
+# `-m integration` etc. (the Makefile does this). This keeps a bare `pytest`
+# safe to run anywhere.
+addopts = [
+    "-m", "unit",
+    "--strict-markers",
+    "--import-mode=importlib",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/__init__.py",
+    "*/state_machines/*",
+    "src/pms/activity_simulator/*",  # exercised by integration, not unit
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# No global fail_under — thresholds are enforced per layer by the Makefile,
+# because the plan sets different targets per layer (90% utils, 75% handlers).
+# `make coverage` runs the full suite and applies the utils floor; handler
+# coverage is checked by `make coverage` too but at the lower handler bar.
+fail_under = 0

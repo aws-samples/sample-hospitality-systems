@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "CreateReservation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["propertyId", "roomTypeId", "ratePlanId", "checkInDate", "checkOutDate", "adults"],
+  "properties": {
+    "propertyId": { "type": "string", "minLength": 1 },
+    "roomTypeId": { "type": "string", "minLength": 1 },
+    "ratePlanId": { "type": "string", "minLength": 1 },
+    "checkInDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "checkOutDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "adults": { "type": "integer", "minimum": 1, "maximum": 8 },
+    "children": { "type": "integer", "minimum": 0, "maximum": 8 },
+    "paymentMethodId": { "type": "string" },
+    "additionalNotes": { "type": "string", "maxLength": 2000 },
+    "guestInfo": { "type": "object" }
+  }
+}

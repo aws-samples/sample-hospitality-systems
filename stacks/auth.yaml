@@ -1,0 +1,279 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AnyCompany Hotel - Cognito User Pool for guest and staff authentication
+  with email sign-in and custom guest_id attribute.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  ##############################################################################
+  # Cognito User Pool
+  ##############################################################################
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    # Sample default: delete with the stack so teardown leaves no orphaned pool.
+    # PRODUCTION should change both back to `Retain` to protect user accounts.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      UserPoolName: !Sub anycompany-${Environment}-user-pool
+      # PLUS tier enables Cognito threat protection (advanced security
+      # features): compromised-credentials detection, adaptive auth, and
+      # the ability to associate a regional WAF with the user pool. Costs
+      # ~$0.02/MAU above ESSENTIALS plus ~$0.05/MAU for threat protection.
+      UserPoolTier: PLUS
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+      # ⚠️ NO MFA IS ENFORCED. Staff/admin users authenticate with
+      # username + password only. This is acceptable for a demo environment,
+      # but production deployments should add MFA for staff accounts by
+      # enabling MfaConfiguration + EnabledMfas: [SOFTWARE_TOKEN_MFA].
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: guest_id
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+        # Property-scoped staff users carry their assigned property here.
+        # Chain-level users (Admin, Manager, RevenueManager) leave it unset.
+        - Name: property_id
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+        # Regional managers carry their region here. Chain-level users leave
+        # it unset; property-scoped users derive their region via FK lookup.
+        - Name: region
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Environment: !Ref Environment
+
+  ##############################################################################
+  # User Pool Client (SPA — no secret)
+  ##############################################################################
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub anycompany-${Environment}-spa-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      # Public SPA client: browser auth only. Guest + staff SPAs use SRP
+      # exclusively (the password never leaves the client). The admin
+      # username/password flow lives on the dedicated AdminAuthClient below,
+      # which is NOT embedded in any frontend bundle.
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      ReadAttributes:
+        - email
+        - given_name
+        - family_name
+        - custom:guest_id
+        - custom:property_id
+        - custom:region
+      WriteAttributes:
+        - email
+        - given_name
+        - family_name
+        - custom:guest_id
+        - custom:property_id
+        - custom:region
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  # Dedicated client for server-side username/password auth (ADMIN_USER_PASSWORD_AUTH).
+  # Used only by non-browser callers — the activity simulator and the integration/
+  # contract test harnesses (which authenticate as seeded service users via
+  # AdminInitiateAuth). It is NOT embedded in any frontend bundle, so the public
+  # SPA client can stay SRP-only. GenerateSecret is false so callers don't need
+  # to compute a SECRET_HASH. ReadAttributes/WriteAttributes mirror the SPA client
+  # so custom:property_id / custom:region flow into the issued tokens — required
+  # for property-scoped staff/service users to work.
+  AdminAuthClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub anycompany-${Environment}-admin-auth-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      ReadAttributes:
+        - email
+        - given_name
+        - family_name
+        - custom:guest_id
+        - custom:property_id
+        - custom:region
+      WriteAttributes:
+        - email
+        - given_name
+        - family_name
+        - custom:guest_id
+        - custom:property_id
+        - custom:region
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  ##############################################################################
+  # PMS Staff Groups
+  ##############################################################################
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admin
+      UserPoolId: !Ref UserPool
+      Description: Chain-level full access to all properties and operations
+
+  ManagerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Manager
+      UserPoolId: !Ref UserPool
+      Description: Chain or property-level management access
+
+  RegionalManagerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: RegionalManager
+      UserPoolId: !Ref UserPool
+      Description: Regional oversight and reporting
+
+  RevenueManagerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: RevenueManager
+      UserPoolId: !Ref UserPool
+      Description: Chain-wide analytics and revenue reporting
+
+  FrontDeskGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: FrontDesk
+      UserPoolId: !Ref UserPool
+      Description: Property-level front desk operations
+
+  HousekeepingGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Housekeeping
+      UserPoolId: !Ref UserPool
+      Description: Property-level housekeeping task management
+
+  ##############################################################################
+  # M2M (Machine-to-Machine) OAuth2 Client
+  ##############################################################################
+  M2MResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: anycompany-pms
+      Name: AnyCompany Hotel PMS API
+      Scopes:
+        - ScopeName: read
+          ScopeDescription: Read access to PMS resources
+        - ScopeName: write
+          ScopeDescription: Write access to PMS resources
+        - ScopeName: admin
+          ScopeDescription: Administrative access
+
+  M2MAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: M2MResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "anycompany-pms-m2m-${Environment}"
+      GenerateSecret: true
+      AllowedOAuthFlows:
+        - client_credentials
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - anycompany-pms/read
+        - anycompany-pms/write
+        - anycompany-pms/admin
+      SupportedIdentityProviders:
+        - COGNITO
+
+  ##############################################################################
+  # User Pool Domain (required for OAuth2 token endpoint)
+  ##############################################################################
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "anycompany-pms-${Environment}-${AWS::AccountId}"
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolId
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID (SPA)
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolClientId
+
+  AdminAuthClientId:
+    Description: Cognito client ID for server-side ADMIN_USER_PASSWORD_AUTH (simulator + test harnesses; not browser-facing)
+    Value: !Ref AdminAuthClient
+    Export:
+      Name: !Sub ${AWS::StackName}-AdminAuthClientId
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt UserPool.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolArn
+
+  M2MClientId:
+    Description: M2M App Client ID for service-to-service auth
+    Value: !Ref M2MAppClient
+    Export:
+      Name: !Sub ${AWS::StackName}-M2MClientId
+
+  UserPoolDomainUrl:
+    Description: Cognito User Pool Domain for OAuth2 token endpoint
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+    Export:
+      Name: !Sub ${AWS::StackName}-UserPoolDomainUrl
