@@ -1,4 +1,4 @@
-# Demo Guide — AnyCompany Hotel
+# Demo Guide — AnyCompany Hotels & Resorts
 
 Everything you need to poke at your deployment: how to find your URLs, the seeded logins for the CRS and PMS apps, and Stripe test cards.
 

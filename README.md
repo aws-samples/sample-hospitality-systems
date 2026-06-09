@@ -60,7 +60,7 @@ Deployed URLs and seeded demo logins live in **[DEMO_GUIDE.md](./DEMO_GUIDE.md)*
 ## Project Structure
 
 ```
-hospitality-systems/
+sample-hospitality-systems/
 ├── template.yaml                  # Root SAM template — every Lambda, both APIs, both state machines, PMS frontend S3 + CloudFront
 │
 ├── stacks/                        # Nested CloudFormation
