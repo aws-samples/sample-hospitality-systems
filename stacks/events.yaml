@@ -100,6 +100,12 @@ Resources:
               Service: events.amazonaws.com
             Action: sqs:SendMessage
             Resource: !GetAtt PmsHousekeepingQueue.Arn
+            # Only the rule(s) that target this queue may deliver to it.
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt CrsToHousekeepingRule.Arn
+                  - !GetAtt CheckoutToHousekeepingRule.Arn
 
   # --- Billing Queue ---
   PmsBillingDLQ:
@@ -131,6 +137,12 @@ Resources:
               Service: events.amazonaws.com
             Action: sqs:SendMessage
             Resource: !GetAtt PmsBillingQueue.Arn
+            # Only the rule(s) that target this queue may deliver to it.
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt CrsToBillingRule.Arn
+                  - !GetAtt CheckoutToBillingRule.Arn
 
   # --- Loyalty Queue ---
   PmsLoyaltyDLQ:
@@ -162,6 +174,11 @@ Resources:
               Service: events.amazonaws.com
             Action: sqs:SendMessage
             Resource: !GetAtt PmsLoyaltyQueue.Arn
+            # Only the rule(s) that target this queue may deliver to it.
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt BillingToLoyaltyRule.Arn
 
   # --- Notifications Queue ---
   PmsNotificationsDLQ:
@@ -193,6 +210,11 @@ Resources:
               Service: events.amazonaws.com
             Action: sqs:SendMessage
             Resource: !GetAtt PmsNotificationsQueue.Arn
+            # Only the rule(s) that target this queue may deliver to it.
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt PmsToNotificationsRule.Arn
 
   ##############################################################################
   # PMS EventBridge Rules

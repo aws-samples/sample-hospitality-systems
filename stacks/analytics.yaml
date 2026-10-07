@@ -218,6 +218,10 @@ Resources:
     Properties:
       DeliveryStreamName: !Sub "anycompany-analytics-${Environment}"
       DeliveryStreamType: DirectPut
+      # Encrypt records at rest while buffered in the stream. An AWS-owned key
+      # needs no key policy and adds no cost.
+      DeliveryStreamEncryptionConfigurationInput:
+        KeyType: AWS_OWNED_CMK
       ExtendedS3DestinationConfiguration:
         BucketARN: !GetAtt AnalyticsBucket.Arn
         RoleARN: !GetAtt FirehoseRole.Arn
@@ -293,16 +297,6 @@ Resources:
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabase}"
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabase}/*"
-        - PolicyName: FirehoseLogging
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
 
   EventBridgeToFirehoseRole:
     Type: AWS::IAM::Role

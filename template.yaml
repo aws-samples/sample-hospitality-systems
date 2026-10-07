@@ -194,6 +194,15 @@ Resources:
               - Effect: Allow
                 Action: events:PutEvents
                 Resource: !GetAtt EventsStack.Outputs.EventBusArn
+        # The scheduled night-audit worker (which uses this role) sends
+        # invocations that still fail after Lambda's async retries here.
+        - PolicyName: ScheduledFunctionsDlqSend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt ScheduledFunctionsDLQ.Arn
 
   # Bucket 3 — DB + EventBridge + Stripe secret read.
   # Used by 7 Stripe-aware handlers (cart, payment intent, refund, webhook).
@@ -597,6 +606,28 @@ Resources:
               - Effect: Allow
                 Action: cognito-idp:AdminInitiateAuth
                 Resource: !GetAtt AuthStack.Outputs.UserPoolArn
+        - PolicyName: ScheduledFunctionsDlqSend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt ScheduledFunctionsDLQ.Arn
+
+  # Dead-letter queue for the scheduled (asynchronously invoked) functions:
+  # the night-audit worker and the activity simulator. When a scheduled run
+  # still fails after Lambda's built-in async retries, the event is kept here
+  # for 14 days instead of being dropped. Functions invoked synchronously (API
+  # Gateway, Step Functions) or through SQS event sources don't use a function
+  # DLQ: their callers handle retries, and the SQS queues have their own DLQs.
+  ScheduledFunctionsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600  # 14 days
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
 
   # ── Infrastructure Stacks ──
   VPCStack:
@@ -2414,6 +2445,9 @@ Resources:
       CodeUri: src/pms/night_audit/
       Timeout: 300
       MemorySize: 512
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ScheduledFunctionsDLQ.Arn
       Layers: [!Ref CommonLayer]
       Events:
         Schedule:
@@ -2669,6 +2703,9 @@ Resources:
       CodeUri: src/pms/activity_simulator/
       Timeout: 900
       MemorySize: 512
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ScheduledFunctionsDLQ.Arn
       Layers: [!Ref CommonLayer]
       Environment:
         Variables:

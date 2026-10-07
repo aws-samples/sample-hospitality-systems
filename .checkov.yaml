@@ -1,0 +1,34 @@
+# Checkov configuration for this repository.
+#
+# Each skipped check below is a deliberate, project-wide design decision for
+# this sample, not an oversight. A skip here applies to every resource, so only
+# checks that reflect a policy for the whole stack are listed. Anything
+# resource-specific stays visible in scan results.
+#
+# Checkov reads this file automatically when run from the repository root.
+
+skip-check:
+  # Customer-managed KMS keys. All of these resources are already encrypted at
+  # rest with AWS-managed or AWS-owned keys (CloudWatch Logs default
+  # encryption, Lambda's service key, SSE-SQS). A customer-managed key adds a
+  # key policy every deployer must get right; a mistake on the SQS key policy
+  # makes EventBridge silently drop events. Lambda environment variables here
+  # hold only resource identifiers; secrets are in Secrets Manager.
+  - CKV_AWS_158  # CloudWatch Log Group encrypted with a customer-managed key
+  - CKV_AWS_173  # Lambda environment variables encrypted with a customer-managed key
+  - CKV_AWS_27   # SQS queue encrypted with a customer-managed key (SSE-SQS is enabled)
+
+  # Reserved concurrency. Reserving concurrency for every function would make
+  # deployment fail on accounts with a low concurrency quota (new accounts can
+  # start well below the default). Throttling and abuse protection come from
+  # AWS WAF rate limits and API Gateway stage throttling instead.
+  - CKV_AWS_115  # Lambda function-level concurrent execution limit
+
+  # API Gateway response caching. Most routes return per-user data behind
+  # authentication, where a shared cache risks serving one user's response to
+  # another, and a cache cluster has a fixed hourly cost.
+  - CKV_AWS_120  # API Gateway caching enabled
+
+  # RDS enhanced monitoring is an operational (not security) control, and
+  # observability beyond CloudWatch defaults is left to the deployer.
+  - CKV_AWS_118  # Enhanced monitoring for RDS instances

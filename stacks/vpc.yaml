@@ -61,7 +61,9 @@ Resources:
       VpcId: !Ref VPC
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: !FindInMap [SubnetConfig, PublicSubnet1, CIDR]
-      MapPublicIpOnLaunch: true
+      # Nothing here needs an automatic public IP: the NAT gateway uses its own
+      # Elastic IP.
+      MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
           Value: !Sub anycompany-${Environment}-public-1
@@ -72,7 +74,9 @@ Resources:
       VpcId: !Ref VPC
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: !FindInMap [SubnetConfig, PublicSubnet2, CIDR]
-      MapPublicIpOnLaunch: true
+      # Nothing here needs an automatic public IP: the NAT gateway uses its own
+      # Elastic IP.
+      MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
           Value: !Sub anycompany-${Environment}-public-2
@@ -188,12 +192,26 @@ Resources:
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      # GroupDescription is immutable (changing it replaces the group and every
+      # function attached to it), so its wording predates the scoped egress
+      # below. The SecurityGroupEgress rules are authoritative.
       GroupDescription: Security group for Lambda functions - allows all outbound
       VpcId: !Ref VPC
+      # Functions need only two kinds of outbound traffic: HTTPS (AWS APIs via
+      # the VPC endpoints and NAT gateway, plus external HTTPS APIs such as
+      # Stripe) and PostgreSQL to RDS Proxy inside the VPC. DNS uses the VPC
+      # resolver, which security groups don't filter.
       SecurityGroupEgress:
-        - IpProtocol: '-1'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: Allow all outbound traffic
+          Description: HTTPS to AWS service endpoints and external HTTPS APIs
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !GetAtt VPC.CidrBlock
+          Description: PostgreSQL to RDS Proxy within the VPC
       Tags:
         - Key: Name
           Value: !Sub anycompany-${Environment}-lambda-sg
