@@ -250,9 +250,9 @@ secret (`anycompany-booking-testsuite-creds-dev`):
   `AdminInitiateAuth` flow the simulator uses, scoped to the role each test
   needs — this is what lets us actually test **tenant isolation and authz**,
   not just happy-path-as-Admin.
-- Note: these test users intersect with the deferred C-3 (MFA) work. When MFA
-  lands, the test users either get MFA pre-enrolled by the seeding script or
-  are exempted via the same client-scoping mechanism. Flagged for that work.
+- Note: if MFA is added later, these test users either get MFA pre-enrolled
+  by the seeding script or are exempted via the same client-scoping
+  mechanism.
 
 ## Test data & cleanup
 
@@ -332,7 +332,7 @@ highest-leverage guard against unintended API changes.
 | Tests interfere with the 4-hourly simulator run | Distinct data prefix; tests tolerate concurrent simulator activity (assert on own records only) |
 | Contract baseline captures buggy current behavior as "correct" | Curated specs layer asserts *intended* behavior to catch this; baseline is for drift-detection, specs for correctness |
 | Handler import resolution is messy (per-domain CodeUri) | `conftest.py` centralizes path setup; documented in the test README |
-| Test users + future MFA (C-3) conflict | Seeding script pre-enrolls or exempts test users; flagged in C-3 notes |
+| Test users + future MFA conflict | Seeding script pre-enrolls or exempts test users |
 | Coverage thresholds slow iteration | Start conservative (75% handlers), ratchet up; thresholds are per-layer not global |
 | Real-stack tests need creds → can't run fully offline | `make test-unit` + `make test-frontend` are the offline inner loop; stack-dependent layers are explicitly separate targets |
 

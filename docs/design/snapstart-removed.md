@@ -58,7 +58,7 @@ not produce a new published version. The `live` alias keeps pointing
 at the previous version, which has the *previous* configuration baked
 in immutably.
 
-We hit this during the per-function IAM refactor (security review C-1).
+We hit this during the per-function IAM refactor.
 Tranche 1 migrated 38 functions from a shared role to a tighter
 `LambdaDbReadRole`. CloudFormation deployed the change to `$LATEST`,
 but no new version was published — `live` stayed on the old version

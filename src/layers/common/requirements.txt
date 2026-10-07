@@ -2,16 +2,15 @@
 #
 # Pinned to MAJOR.MINOR (==X.Y.*) for reproducible builds — two builds days apart
 # resolve to the same minor — while still allowing patch-level security fixes to
-# flow (security review M-10). Re-pin deliberately (e.g. quarterly) by bumping the
-# minor here after testing. Versions reflect the proven-working resolved set as of
-# 2026-06-04.
+# flow. Re-pin deliberately (e.g. quarterly) by bumping the minor here after
+# testing.
 psycopg[binary]==3.3.*
 aws-lambda-powertools==3.29.*
 boto3==1.43.*
 stripe==15.2.*
 pydantic==2.13.*
-# JWT verification (security H-2). PyJWT, not python-jose: more actively
-# maintained, which matters for auth-critical code (security review M-10).
+# JWT verification. PyJWT, not python-jose: more actively maintained, which
+# matters for auth-critical code.
 pyjwt[crypto]==2.15.*
 # Transitive (via requests). Floor pinned so dependency resolution can't select
 # a release affected by CVE-2026-45409, fixed in 3.15.
