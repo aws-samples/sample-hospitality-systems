@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import PublicLayout from '../../components/layout/PublicLayout';
+import { safeReturnPath } from '../../utils/safeRedirect';
 
 const SignInPage: React.FC = () => {
   const { signIn } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const returnUrl = searchParams.get('returnUrl') || '/account';
+  // Only same-site paths; anything else falls back to the account page.
+  const returnUrl = safeReturnPath(searchParams.get('returnUrl'), '/account');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
