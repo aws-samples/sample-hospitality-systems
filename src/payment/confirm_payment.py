@@ -66,8 +66,24 @@ def handler(event, context):
                 conn.commit()
                 return bad_request("This payment has already been captured.")
 
+            # Authorized amount is stored in dollars (NUMERIC) on the
+            # authorization row; convert to cents only at the Stripe boundary.
+            captured_amount = auth_record["amount"]
+            amount_cents = int(round(float(captured_amount) * 100))
+
             # Capture via Stripe
             captured_intent = capture_payment(payment_intent_id)
+
+            # Extract the Stripe charge id / receipt url from the captured
+            # intent (mirrors the inline capture in complete_booking).
+            stripe_charge_id = None
+            receipt_url = None
+            if getattr(captured_intent, "latest_charge", None):
+                stripe_charge_id = captured_intent.latest_charge
+            if getattr(captured_intent, "charges", None) and captured_intent.charges.data:
+                charge = captured_intent.charges.data[0]
+                stripe_charge_id = charge.id
+                receipt_url = getattr(charge, "receipt_url", None)
 
             # Update authorization status
             now = datetime.now(timezone.utc)
@@ -87,14 +103,13 @@ def handler(event, context):
                 cur.execute(
                     """
                     INSERT INTO payment_captures (
-                        capture_id, authorization_id, stripe_payment_intent_id,
-                        amount_cents, currency, status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        capture_id, authorization_id, captured_amount,
+                        stripe_charge_id, receipt_url, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        capture_id, authorization_id, payment_intent_id,
-                        auth_record["amount_cents"], auth_record["currency"],
-                        "SUCCEEDED", now,
+                        capture_id, authorization_id, captured_amount,
+                        stripe_charge_id, receipt_url, now,
                     ),
                 )
 
@@ -112,7 +127,7 @@ def handler(event, context):
                 "captureId": capture_id,
                 "guestId": str(auth_record["guest_id"]),
                 "reservationId": str(auth_record["reservation_id"]),
-                "amountCents": auth_record["amount_cents"],
+                "amountCents": amount_cents,
                 "currency": auth_record["currency"],
                 "stripePaymentIntentId": payment_intent_id,
             },
@@ -122,7 +137,7 @@ def handler(event, context):
             "capture_id": capture_id,
             "authorization_id": authorization_id,
             "stripe_payment_intent_id": payment_intent_id,
-            "amount_cents": auth_record["amount_cents"],
+            "amount_cents": amount_cents,
             "currency": auth_record["currency"],
             "status": "SUCCEEDED",
             "captured_at": now.isoformat(),

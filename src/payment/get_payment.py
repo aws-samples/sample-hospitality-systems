@@ -89,13 +89,16 @@ def handler(event, context):
                 )
                 captures = cur.fetchall()
 
-            # Get associated refunds
+            # Get associated refunds (refunds FK to a capture, which FKs to
+            # the authorization).
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT * FROM payment_refunds
-                    WHERE authorization_id = %s
-                    ORDER BY created_at DESC
+                    SELECT pr.*
+                    FROM payment_refunds pr
+                    JOIN payment_captures pc ON pr.capture_id = pc.capture_id
+                    WHERE pc.authorization_id = %s
+                    ORDER BY pr.created_at DESC
                     """,
                     (payment_id,),
                 )

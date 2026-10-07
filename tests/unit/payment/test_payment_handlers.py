@@ -126,11 +126,18 @@ class TestRefundPayment:
         ev = make_event(path_params={"paymentId": PAYMENT}, body={}, sub=SUB)
         assert refund_payment.handler(ev, None)["statusCode"] == 400
 
+    def test_invalid_reason(self, refund_payment, make_event):
+        # Reason must satisfy the payment_refunds.reason CHECK constraint.
+        ev = make_event(
+            path_params={"paymentId": PAYMENT}, body={"reason": "requested_by_customer"}, sub=SUB
+        )
+        assert refund_payment.handler(ev, None)["statusCode"] == 400
+
     def test_not_found(self, refund_payment, make_event, mock_db, monkeypatch):
         mock_db.queue(fetchone=None)
         monkeypatch.setattr(refund_payment, "get_conn", lambda: mock_db.conn)
         ev = make_event(
-            path_params={"paymentId": PAYMENT}, body={"reason": "requested_by_customer"}, sub=SUB
+            path_params={"paymentId": PAYMENT}, body={"reason": "CANCELLATION"}, sub=SUB
         )
         assert refund_payment.handler(ev, None)["statusCode"] == 404
 
