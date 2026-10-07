@@ -8,7 +8,8 @@ Posts room charges to in-house guest folios and generates daily metrics.
 import json
 import os
 import uuid
-from datetime import date, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from utils.database import get_conn
 from utils.events import publish_event
@@ -18,12 +19,19 @@ logger = get_logger("pms-night-audit")
 
 TAX_RATE = float(os.environ.get("TAX_RATE", "0.15"))
 
+# The audit runs at 11:59 PM ET (cron 03:59 UTC) and settles the night that just
+# ended. That night's calendar day is the property-local (ET) date — NOT the UTC
+# date, which at 03:59 UTC has already rolled to tomorrow. Dating charges by the
+# UTC date would stamp every room-night one day late, so we resolve the ET date
+# (DST-correct via zoneinfo). Overridable per run via event["auditDate"].
+PROPERTY_TZ = ZoneInfo(os.environ.get("PROPERTY_TZ", "America/New_York"))
+
 
 @logger.inject_lambda_context
 def handler(event, context):
     """Run night audit for all active properties."""
     # Determine audit date (today or from event)
-    audit_date_str = event.get("auditDate") or str(date.today())
+    audit_date_str = event.get("auditDate") or str(datetime.now(PROPERTY_TZ).date())
     audit_date = datetime.strptime(audit_date_str, "%Y-%m-%d").date()
     triggered_by = event.get("triggeredBy", "schedule")
 
@@ -85,7 +93,18 @@ def _process_property(cur, property_id, audit_date, triggered_by):
     )
     in_house = cur.fetchall()
 
+    rooms_sold = 0
     for stay in in_house:
+        # Only charge for a night the guest actually occupies:
+        # check_in_date <= audit_date < check_out_date. A stay whose
+        # check_out_date equals audit_date is departing this morning, so the
+        # audit night is NOT a room-night for them — skip it (no departure-day
+        # charge). The query already restricts to CHECKED_IN, but guarding both
+        # ends keeps the room-nights count honest.
+        if not (stay["check_in_date"] <= audit_date < stay["check_out_date"]):
+            continue
+        rooms_sold += 1
+
         # Check if room charge already posted for this date (idempotency)
         cur.execute(
             "SELECT charge_id FROM charges "
@@ -147,7 +166,7 @@ def _process_property(cur, property_id, audit_date, triggered_by):
         "totalRooms": total_rooms,
         "occupiedRooms": occupied,
         "occupancyPercent": occupancy_pct,
-        "roomsSold": len(in_house),
+        "roomsSold": rooms_sold,
         "dailyRevenue": daily_revenue,
         "chargesPosted": charges_posted,
         "adr": round(daily_revenue / occupied, 2) if occupied > 0 else 0,

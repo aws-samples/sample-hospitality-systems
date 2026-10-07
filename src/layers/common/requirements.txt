@@ -13,3 +13,8 @@ pydantic==2.13.*
 # JWT verification (security H-2). PyJWT, not python-jose: more actively
 # maintained, which matters for auth-critical code (security review M-10).
 pyjwt[crypto]==2.13.*
+# Time-zone database for zoneinfo. Lambda's python3.12 base image does not
+# reliably ship the system tz data, so America/New_York lookups raise
+# ZoneInfoNotFoundError without this. Used by the night audit to date room
+# charges by the property's local (ET) calendar day.
+tzdata==2025.*
