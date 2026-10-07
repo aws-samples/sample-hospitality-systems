@@ -4,13 +4,13 @@ Lambda handler for GET /properties/{propertyId}/room-types/{roomTypeId}.
 Retrieves a single room type by ID for a given property.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, not_found, bad_request, server_error, transform_keys
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
 from utils.validation import validate_uuid
 
 logger = get_logger("property")
@@ -69,6 +69,6 @@ def handler(event, context):
 
         return ok(_serialize_row(room_type))
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting room type")
         return server_error("Failed to get room type.")

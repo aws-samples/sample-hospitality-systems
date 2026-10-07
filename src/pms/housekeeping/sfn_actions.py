@@ -5,9 +5,8 @@ Lambda invoked by Step Functions for state transitions.
 Handles: store tokens, update room status (with OCCUPIED guard), record completions.
 """
 
-import json
-from utils.logger import get_logger
 from utils.database import get_conn
+from utils.logger import get_logger
 
 logger = get_logger("pms-housekeeping-sfn")
 
@@ -17,8 +16,6 @@ def handler(event, context):
     """Route to appropriate action based on event input."""
     action = event.get("action")
     task_id = event.get("taskId")
-    room_id = event.get("roomId")
-    task_token = event.get("taskToken")  # Provided by SFN for waitForTaskToken
 
     logger.info("SFN action", action=action, task_id=task_id)
 
@@ -43,14 +40,13 @@ def _store_cleaning_token(event):
     task_id = event["taskId"]
     task_token = event["taskToken"]
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE housekeeping_tasks SET cleaning_task_token = %s, "
-                "status = 'CLEANING', updated_at = now() WHERE task_id = %s",
-                [task_token, task_id],
-            )
-            conn.commit()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE housekeeping_tasks SET cleaning_task_token = %s, "
+            "status = 'CLEANING', updated_at = now() WHERE task_id = %s",
+            [task_token, task_id],
+        )
+        conn.commit()
 
     return {"taskId": task_id, "status": "CLEANING"}
 
@@ -60,14 +56,13 @@ def _store_inspection_token(event):
     task_id = event["taskId"]
     task_token = event["taskToken"]
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE housekeeping_tasks SET inspection_task_token = %s, "
-                "status = 'INSPECTING', updated_at = now() WHERE task_id = %s",
-                [task_token, task_id],
-            )
-            conn.commit()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE housekeeping_tasks SET inspection_task_token = %s, "
+            "status = 'INSPECTING', updated_at = now() WHERE task_id = %s",
+            [task_token, task_id],
+        )
+        conn.commit()
 
     return {"taskId": task_id, "status": "INSPECTING"}
 
@@ -92,30 +87,29 @@ def _update_room_to_available(event):
 
 def _update_room_with_guard(room_id, new_status):
     """Update room status only if not OCCUPIED (stale task protection)."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT status FROM rooms WHERE room_id = %s FOR UPDATE",
-                [room_id],
-            )
-            room = cur.fetchone()
-            if not room:
-                logger.error("Room not found", room_id=room_id)
-                return {"skipped": True, "reason": "ROOM_NOT_FOUND"}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM rooms WHERE room_id = %s FOR UPDATE",
+            [room_id],
+        )
+        room = cur.fetchone()
+        if not room:
+            logger.error("Room not found", room_id=room_id)
+            return {"skipped": True, "reason": "ROOM_NOT_FOUND"}
 
-            if room["status"] == "OCCUPIED":
-                logger.warning(
-                    "OCCUPIED guard: skipping room status update",
-                    room_id=room_id,
-                    attempted_status=new_status,
-                )
-                return {"skipped": True, "reason": "OCCUPIED"}
-
-            cur.execute(
-                "UPDATE rooms SET status = %s, updated_at = now() WHERE room_id = %s",
-                [new_status, room_id],
+        if room["status"] == "OCCUPIED":
+            logger.warning(
+                "OCCUPIED guard: skipping room status update",
+                room_id=room_id,
+                attempted_status=new_status,
             )
-            conn.commit()
+            return {"skipped": True, "reason": "OCCUPIED"}
+
+        cur.execute(
+            "UPDATE rooms SET status = %s, updated_at = now() WHERE room_id = %s",
+            [new_status, room_id],
+        )
+        conn.commit()
 
     logger.info("Room status updated", room_id=room_id, new_status=new_status)
     return {"skipped": False, "newStatus": new_status}
@@ -124,26 +118,24 @@ def _update_room_with_guard(room_id, new_status):
 def _record_cleaning_complete(event):
     """Record cleaning completion timestamp."""
     task_id = event["taskId"]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE housekeeping_tasks SET status = 'COMPLETED', "
-                "completed_at = now(), updated_at = now() WHERE task_id = %s",
-                [task_id],
-            )
-            conn.commit()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE housekeeping_tasks SET status = 'COMPLETED', "
+            "completed_at = now(), updated_at = now() WHERE task_id = %s",
+            [task_id],
+        )
+        conn.commit()
     return {"taskId": task_id, "status": "COMPLETED"}
 
 
 def _record_inspection_complete(event):
     """Record inspection completion."""
     task_id = event["taskId"]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE housekeeping_tasks SET status = 'INSPECTED', "
-                "inspected_at = now(), updated_at = now() WHERE task_id = %s",
-                [task_id],
-            )
-            conn.commit()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE housekeeping_tasks SET status = 'INSPECTED', "
+            "inspected_at = now(), updated_at = now() WHERE task_id = %s",
+            [task_id],
+        )
+        conn.commit()
     return {"taskId": task_id, "status": "INSPECTED"}

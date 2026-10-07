@@ -9,13 +9,13 @@ the discount to the cart total.
 Public endpoint — no authentication required.
 """
 
-from utils.logger import get_logger
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, not_found, server_error, transform_keys
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
 from utils.validation import parse_body, require_fields, validate_uuid
 
 logger = get_logger("booking")
@@ -75,7 +75,7 @@ def handler(event, context):
                 conn.commit()
                 return bad_request(f"Cart is no longer active. Current status: {cart['status']}")
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if cart["expires_at"] < now:
                 conn.commit()
                 return bad_request("Cart has expired. Please create a new cart.")
@@ -217,6 +217,6 @@ def handler(event, context):
 
         return ok(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error applying promo code")
         return server_error("Failed to apply promo code.")

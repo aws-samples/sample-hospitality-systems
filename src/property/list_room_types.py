@@ -5,13 +5,13 @@ Lists all active room types for a property, including base rates
 and the Best Available Rate (BAR) from active PUBLIC rate plans.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, server_error, transform_keys
+from utils.logger import get_logger
+from utils.response import bad_request, ok, server_error
 from utils.validation import validate_uuid
 
 logger = get_logger("property")
@@ -99,14 +99,11 @@ def handler(event, context):
         for rt in room_types:
             serialized = _serialize_row(rt)
             rt_id = str(rt["room_type_id"])
-            if rt_id in bar_rates:
-                serialized["best_available_rate"] = bar_rates[rt_id]
-            else:
-                serialized["best_available_rate"] = None
+            serialized["best_available_rate"] = bar_rates.get(rt_id)
             result.append(serialized)
 
         return ok(result)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error listing room types")
         return server_error("Failed to list room types.")

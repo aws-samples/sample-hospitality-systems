@@ -5,17 +5,15 @@ Enforces property-scoped, regional, and chain-level access control
 based on JWT custom claims from Cognito.
 """
 
-from typing import Optional
-from utils.auth import get_claims, get_groups
-from utils.response import forbidden
 
+from utils.auth import get_claims
 
 # Groups that have chain-level (all properties) access
 CHAIN_LEVEL_GROUPS = {"Admin", "Manager", "RevenueManager"}
 REGIONAL_GROUPS = {"RegionalManager"}
 
 
-def get_property_id(event: dict) -> Optional[str]:
+def get_property_id(event: dict) -> str | None:
     """
     Extract the property_id from the JWT custom:property_id claim.
 
@@ -31,7 +29,7 @@ def get_property_id(event: dict) -> Optional[str]:
     return claims.get("custom:property_id") or None
 
 
-def get_region(event: dict) -> Optional[str]:
+def get_region(event: dict) -> str | None:
     """
     Extract the region from the JWT custom:region claim.
 
@@ -148,7 +146,7 @@ def verify_property_access(event: dict, record_property_id: str) -> None:
         raise ForbiddenError("Access denied: property mismatch")
 
 
-def get_accessible_properties(event: dict) -> Optional[list[str]]:
+def get_accessible_properties(event: dict) -> list[str] | None:
     """
     Get the list of property IDs the user can access.
 

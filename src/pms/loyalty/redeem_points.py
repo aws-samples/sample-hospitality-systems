@@ -5,14 +5,13 @@ POST /loyalty/{guestId}/redeem
 Redeem points for rewards (e.g., free night = 10,000 points).
 """
 
-import os
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.validation import validate_uuid, parse_body
-from utils.loyalty import redeem_points as do_redeem_points
 from utils.events import publish_event
-from utils.tenant import require_groups, ForbiddenError
+from utils.logger import get_logger
+from utils.loyalty import redeem_points as do_redeem_points
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups
+from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("pms-loyalty")
 
@@ -72,6 +71,6 @@ def handler(event, context):
 
     except ForbiddenError as e:
         return forbidden(str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error redeeming points")
         return server_error()

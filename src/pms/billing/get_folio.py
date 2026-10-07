@@ -5,11 +5,11 @@ GET /billing/folios/{folioId}
 Returns folio with all charges and payments.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
 from utils.validation import validate_uuid
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
 
 logger = get_logger("pms-billing")
 
@@ -23,42 +23,41 @@ def handler(event, context):
             event.get("pathParameters", {}).get("folioId"), "folioId"
         )
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Get folio
-                cur.execute(
-                    "SELECT f.folio_id, f.reservation_id, f.property_id, f.guest_id, "
-                    "f.check_in_date, f.check_out_date, f.status, "
-                    "f.subtotal, f.tax_amount, f.total_amount, "
-                    "f.payment_method, f.paid_at, f.created_at, "
-                    "g.first_name, g.last_name "
-                    "FROM folios f "
-                    "LEFT JOIN guests g ON f.guest_id = g.guest_id "
-                    "WHERE f.folio_id = %s",
-                    [folio_id],
-                )
-                folio = cur.fetchone()
-                if not folio:
-                    return error(404, "NOT_FOUND", "Folio not found")
+        with get_conn() as conn, conn.cursor() as cur:
+            # Get folio
+            cur.execute(
+                "SELECT f.folio_id, f.reservation_id, f.property_id, f.guest_id, "
+                "f.check_in_date, f.check_out_date, f.status, "
+                "f.subtotal, f.tax_amount, f.total_amount, "
+                "f.payment_method, f.paid_at, f.created_at, "
+                "g.first_name, g.last_name "
+                "FROM folios f "
+                "LEFT JOIN guests g ON f.guest_id = g.guest_id "
+                "WHERE f.folio_id = %s",
+                [folio_id],
+            )
+            folio = cur.fetchone()
+            if not folio:
+                return error(404, "NOT_FOUND", "Folio not found")
 
-                verify_property_access(event, str(folio["property_id"]))
+            verify_property_access(event, str(folio["property_id"]))
 
-                # Get charges
-                cur.execute(
-                    "SELECT charge_id, charge_type, description, amount, "
-                    "charge_date, status, voided_at, created_at "
-                    "FROM charges WHERE folio_id = %s ORDER BY charge_date, created_at",
-                    [folio_id],
-                )
-                charges = cur.fetchall()
+            # Get charges
+            cur.execute(
+                "SELECT charge_id, charge_type, description, amount, "
+                "charge_date, status, voided_at, created_at "
+                "FROM charges WHERE folio_id = %s ORDER BY charge_date, created_at",
+                [folio_id],
+            )
+            charges = cur.fetchall()
 
-                # Get payments
-                cur.execute(
-                    "SELECT payment_id, amount, method, status, created_at "
-                    "FROM payments WHERE folio_id = %s ORDER BY created_at",
-                    [folio_id],
-                )
-                payments = cur.fetchall()
+            # Get payments
+            cur.execute(
+                "SELECT payment_id, amount, method, status, created_at "
+                "FROM payments WHERE folio_id = %s ORDER BY created_at",
+                [folio_id],
+            )
+            payments = cur.fetchall()
 
         return ok({
             "folio": {
@@ -103,6 +102,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting folio")
         return server_error()

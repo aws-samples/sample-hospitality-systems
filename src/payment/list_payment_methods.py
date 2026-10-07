@@ -4,15 +4,15 @@ Lambda handler for GET /payment-methods.
 Lists all stored payment methods for the authenticated guest.
 """
 
-from utils.logger import get_logger
 import os
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from utils.database import get_conn
-from utils.response import ok, not_found, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import not_found, ok, server_error
 
 logger = get_logger("payment")
 
@@ -86,6 +86,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error listing payment methods")
         return server_error("Failed to list payment methods.")

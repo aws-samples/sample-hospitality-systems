@@ -11,12 +11,12 @@ All monetary amounts are in cents (e.g., $150.00 = 15000).
 
 import json
 import os
-from typing import Any, Optional
+from typing import Any
 
 import boto3
 import stripe
 
-_cached_api_key: Optional[str] = None
+_cached_api_key: str | None = None
 
 
 def _get_stripe_secret() -> str:
@@ -53,7 +53,7 @@ def get_stripe() -> stripe:
 def create_customer(
     email: str,
     name: str,
-    metadata: Optional[dict[str, str]] = None,
+    metadata: dict[str, str] | None = None,
 ) -> stripe.Customer:
     """
     Create a Stripe Customer.
@@ -81,8 +81,8 @@ def create_payment_intent(
     amount_cents: int,
     currency: str,
     customer_id: str,
-    metadata: Optional[dict[str, str]] = None,
-    payment_method: Optional[str] = None,
+    metadata: dict[str, str] | None = None,
+    payment_method: str | None = None,
     confirm: bool = False,
 ) -> stripe.PaymentIntent:
     """
@@ -121,7 +121,7 @@ def create_payment_intent(
 
 def capture_payment(
     payment_intent_id: str,
-    amount_cents: Optional[int] = None,
+    amount_cents: int | None = None,
 ) -> stripe.PaymentIntent:
     """
     Capture a previously authorized PaymentIntent.
@@ -147,8 +147,8 @@ def capture_payment(
 
 def create_refund(
     payment_intent_id: str,
-    amount_cents: Optional[int] = None,
-    reason: Optional[str] = None,
+    amount_cents: int | None = None,
+    reason: str | None = None,
 ) -> stripe.Refund:
     """
     Create a refund against a PaymentIntent.

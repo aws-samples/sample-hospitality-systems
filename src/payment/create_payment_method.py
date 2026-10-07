@@ -7,16 +7,16 @@ Raw card data is never handled -- only the Stripe-tokenized payment
 method ID.
 """
 
-from utils.logger import get_logger
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from utils.database import get_conn
-from utils.response import created, bad_request, not_found, server_error
 from utils.auth import get_claims
-from utils.validation import parse_body, require_fields
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import bad_request, created, not_found, server_error
 from utils.stripe_client import get_stripe
+from utils.validation import parse_body, require_fields
 
 logger = get_logger("payment")
 
@@ -74,7 +74,7 @@ def handler(event, context):
 
             # Insert stored payment method record
             pm_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -94,7 +94,7 @@ def handler(event, context):
                         now, now,
                     ),
                 )
-                stored_pm = cur.fetchone()
+                cur.fetchone()
 
             conn.commit()
         except Exception:
@@ -115,6 +115,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error creating payment method")
         return server_error("Failed to create payment method.")

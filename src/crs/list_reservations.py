@@ -6,14 +6,14 @@ status filtering and pagination. Results are ordered by check-in
 date descending.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from utils.database import get_conn
-from utils.response import ok, bad_request, server_error, transform_keys
 from utils.auth import get_guest_id
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import bad_request, ok, server_error
 from utils.validation import validate_pagination
 
 logger = get_logger("crs")
@@ -128,6 +128,6 @@ def handler(event, context):
             }
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error listing reservations")
         return server_error("Failed to list reservations.")

@@ -13,7 +13,6 @@ from io import BytesIO
 
 import boto3
 
-
 # Guest data matching Cognito users (same as seed_pms_data.py)
 GUESTS_JSON = '''[
     {"email": "sarah.chen@example.com", "first_name": "Sarah", "last_name": "Chen",

@@ -6,15 +6,15 @@ connecting through RDS Proxy. Falls back to Secrets Manager
 credentials if IAM auth token generation fails.
 """
 
+import contextlib
 import os
-import ssl
-from typing import Any, Optional
+from typing import Any
 
 import boto3
 import psycopg
 from psycopg.rows import dict_row
 
-_connection: Optional[psycopg.Connection] = None
+_connection: psycopg.Connection | None = None
 
 
 def _generate_iam_token() -> str:
@@ -63,10 +63,8 @@ def get_conn() -> psycopg.Connection:
                 cur.execute("SELECT 1")
             return _connection
         except psycopg.Error:
-            try:
+            with contextlib.suppress(psycopg.Error):
                 _connection.close()
-            except psycopg.Error:
-                pass
             _connection = None
 
     host = os.environ["DB_PROXY_ENDPOINT"]
@@ -86,7 +84,7 @@ def get_conn() -> psycopg.Connection:
     return _connection
 
 
-def execute_query(query: str, params: Optional[tuple | list] = None) -> list[dict[str, Any]]:
+def execute_query(query: str, params: tuple | list | None = None) -> list[dict[str, Any]]:
     """Execute a SQL query and return all result rows as a list of dicts."""
     conn = get_conn()
     try:
@@ -103,7 +101,7 @@ def execute_query(query: str, params: Optional[tuple | list] = None) -> list[dic
         raise
 
 
-def execute_query_one(query: str, params: Optional[tuple | list] = None) -> Optional[dict[str, Any]]:
+def execute_query_one(query: str, params: tuple | list | None = None) -> dict[str, Any] | None:
     """Execute a SQL query and return the first result row, or None."""
     conn = get_conn()
     try:

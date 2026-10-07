@@ -5,18 +5,18 @@ POST /audit/runs
 Admin-only endpoint to manually trigger night audit for a specific date.
 """
 
-import json
 from datetime import date
+
 from utils.logger import get_logger
-from utils.response import ok, error, forbidden, server_error
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups
 from utils.validation import parse_body
-from utils.tenant import require_groups, ForbiddenError
 
 logger = get_logger("pms-night-audit")
 
 # Import the worker handler directly. CodeUri is src/pms/night_audit/, so the
 # sibling module is imported as 'worker' (no 'night_audit' package at runtime).
-from worker import handler as audit_worker
+from worker import handler as audit_worker  # noqa: E402
 
 
 @logger.inject_lambda_context
@@ -47,6 +47,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error triggering night audit")
         return server_error()

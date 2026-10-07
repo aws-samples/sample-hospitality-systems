@@ -27,8 +27,11 @@ override AWS_REGION := us-east-1
 # The contract + integration suites read the stack's ApiUrl / PmsApiUrl
 # outputs directly.
 
+RUFF        := $(VENV)/bin/ruff
+
 .PHONY: help install-test test-unit test-integration test-contract test-e2e \
-        test-frontend test-browser test-all coverage sweep clean-test
+        test-frontend test-browser test-all coverage sweep clean-test \
+        lint lint-fix
 
 help:
 	@echo "Test targets:"
@@ -42,6 +45,8 @@ help:
 	@echo "  make test-all          unit + frontend, then stack-dependent layers"
 	@echo "  make coverage          Backend coverage report with thresholds"
 	@echo "  make sweep             Delete orphan testsuite-* data from the dev stack"
+	@echo "  make lint              Lint Python with Ruff (config in pyproject.toml)"
+	@echo "  make lint-fix          Lint and apply Ruff's safe auto-fixes"
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 install-test:
@@ -95,6 +100,14 @@ coverage-handlers:
 		--cov-fail-under=50 \
 		--cov-config=pyproject.toml \
 		$(shell [ -d tests/unit ] && echo tests/unit)
+
+# ── Lint ─────────────────────────────────────────────────────────────────────
+# Lint only (no formatting). Rule set + excludes live in pyproject.toml.
+lint:
+	$(RUFF) check .
+
+lint-fix:
+	$(RUFF) check --fix .
 
 # ── Maintenance ────────────────────────────────────────────────────────────
 sweep:

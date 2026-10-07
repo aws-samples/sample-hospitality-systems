@@ -11,17 +11,17 @@ Used by the PMS Dashboard to populate the property selector for chain-level
 users and to resolve the property name for property-scoped users.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import forbidden, ok, server_error
 from utils.tenant import (
-    require_groups,
-    get_property_id,
-    get_region,
-    get_groups_from_event,
     CHAIN_LEVEL_GROUPS,
     REGIONAL_GROUPS,
     ForbiddenError,
+    get_groups_from_event,
+    get_property_id,
+    get_region,
+    require_groups,
 )
 
 logger = get_logger("pms-reporting")
@@ -38,39 +38,38 @@ def handler(event, context):
         caller_property_id = get_property_id(event)
         user_groups = set(get_groups_from_event(event))
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                if caller_property_id:
-                    # Property-scoped user: only their property.
-                    cur.execute(
-                        "SELECT property_id, name, city, state, region "
-                        "FROM properties WHERE property_id = %s AND is_active = TRUE",
-                        [caller_property_id],
-                    )
-                elif user_groups.intersection(REGIONAL_GROUPS):
-                    # Regional user: properties in their region.
-                    region = get_region(event)
-                    if not region:
-                        cur.execute(
-                            "SELECT property_id, name, city, state, region "
-                            "FROM properties WHERE is_active = TRUE ORDER BY name"
-                        )
-                    else:
-                        cur.execute(
-                            "SELECT property_id, name, city, state, region "
-                            "FROM properties WHERE region = %s AND is_active = TRUE ORDER BY name",
-                            [region],
-                        )
-                elif user_groups.intersection(CHAIN_LEVEL_GROUPS):
-                    # Chain-level: all active properties.
+        with get_conn() as conn, conn.cursor() as cur:
+            if caller_property_id:
+                # Property-scoped user: only their property.
+                cur.execute(
+                    "SELECT property_id, name, city, state, region "
+                    "FROM properties WHERE property_id = %s AND is_active = TRUE",
+                    [caller_property_id],
+                )
+            elif user_groups.intersection(REGIONAL_GROUPS):
+                # Regional user: properties in their region.
+                region = get_region(event)
+                if not region:
                     cur.execute(
                         "SELECT property_id, name, city, state, region "
                         "FROM properties WHERE is_active = TRUE ORDER BY name"
                     )
                 else:
-                    return ok({"properties": []})
+                    cur.execute(
+                        "SELECT property_id, name, city, state, region "
+                        "FROM properties WHERE region = %s AND is_active = TRUE ORDER BY name",
+                        [region],
+                    )
+            elif user_groups.intersection(CHAIN_LEVEL_GROUPS):
+                # Chain-level: all active properties.
+                cur.execute(
+                    "SELECT property_id, name, city, state, region "
+                    "FROM properties WHERE is_active = TRUE ORDER BY name"
+                )
+            else:
+                return ok({"properties": []})
 
-                rows = cur.fetchall()
+            rows = cur.fetchall()
 
         properties = [
             {

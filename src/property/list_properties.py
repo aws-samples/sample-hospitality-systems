@@ -6,13 +6,13 @@ and active status. Results are ordered by featured status (descending)
 then name (ascending) with pagination support.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, server_error, transform_keys
+from utils.logger import get_logger
+from utils.response import ok, server_error
 from utils.validation import validate_pagination
 
 logger = get_logger("property")
@@ -122,6 +122,6 @@ def handler(event, context):
             }
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error listing properties")
         return server_error("Failed to list properties.")

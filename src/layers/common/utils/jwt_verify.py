@@ -32,14 +32,14 @@ import json
 import os
 import time
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 from jwt import PyJWTError
 from jwt.algorithms import RSAAlgorithm
 
 # JWKS cache (per warm container).
-_jwks_cache: Optional[dict] = None
+_jwks_cache: dict | None = None
 _jwks_fetched_at: float = 0.0
 _JWKS_TTL_SECONDS = 3600  # Cognito signing keys are long-lived; refresh hourly.
 
@@ -76,7 +76,7 @@ def _get_jwks(force_refresh: bool = False) -> dict:
     return _jwks_cache
 
 
-def extract_bearer_token(event: dict) -> Optional[str]:
+def extract_bearer_token(event: dict) -> str | None:
     """Pull the raw JWT from the Authorization header, if present.
 
     API Gateway may lower-case header keys, so check both. Returns None when no

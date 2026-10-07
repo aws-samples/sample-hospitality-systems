@@ -8,16 +8,26 @@ and unauthenticated (guest) users via optional JWT.
 Public endpoint — authentication is optional.
 """
 
-import json
-from utils.logger import get_logger
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
-from utils.database import get_conn
-from utils.response import ok, created, bad_request, not_found, server_error, transform_keys
 from utils.auth import get_claims
-from utils.validation import parse_body, require_fields, validate_uuid, validate_date, validate_date_range
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import (
+    bad_request,
+    created,
+    not_found,
+    server_error,
+)
+from utils.validation import (
+    parse_body,
+    require_fields,
+    validate_date,
+    validate_date_range,
+    validate_uuid,
+)
 
 logger = get_logger("booking")
 
@@ -258,7 +268,7 @@ def handler(event, context):
 
             # Create the cart
             cart_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             expires_at = now + timedelta(minutes=30)
 
             with conn.cursor() as cur:
@@ -372,6 +382,6 @@ def handler(event, context):
 
         return created(response_data)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error creating booking cart")
         return server_error("Failed to create booking cart.")

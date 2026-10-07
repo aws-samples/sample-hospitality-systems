@@ -6,11 +6,11 @@ Earns points, increments total_stays, recalculates tier.
 """
 
 import json
-import os
-from utils.logger import get_logger
+
 from utils.database import get_conn
-from utils.loyalty import earn_points, recalculate_tier
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.loyalty import earn_points, recalculate_tier
 
 logger = get_logger("pms-loyalty")
 
@@ -31,7 +31,7 @@ def handler(event, context):
             else:
                 logger.info("Ignoring unhandled event", detail_type=detail_type)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to process loyalty event",
                            message_id=record.get("messageId"))
             failures.append({"itemIdentifier": record["messageId"]})
@@ -50,61 +50,60 @@ def _earn_points_on_checkout(detail):
         logger.error("Missing required fields in payment event", detail=detail)
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Idempotency: check if points already earned for this reservation
-            cur.execute(
-                "SELECT transaction_id FROM loyalty_transactions "
-                "WHERE reservation_id = %s AND transaction_type = 'EARN_STAY'",
-                [reservation_id],
-            )
-            if cur.fetchone():
-                logger.info("Points already earned for reservation, skipping",
-                           reservation_id=reservation_id)
-                return
+    with get_conn() as conn, conn.cursor() as cur:
+        # Idempotency: check if points already earned for this reservation
+        cur.execute(
+            "SELECT transaction_id FROM loyalty_transactions "
+            "WHERE reservation_id = %s AND transaction_type = 'EARN_STAY'",
+            [reservation_id],
+        )
+        if cur.fetchone():
+            logger.info("Points already earned for reservation, skipping",
+                       reservation_id=reservation_id)
+            return
 
-            # Get reservation details for nights
-            cur.execute(
-                "SELECT check_in_date, check_out_date FROM reservations "
-                "WHERE reservation_id = %s",
-                [reservation_id],
-            )
-            reservation = cur.fetchone()
-            if not reservation:
-                logger.error("Reservation not found", reservation_id=reservation_id)
-                return
+        # Get reservation details for nights
+        cur.execute(
+            "SELECT check_in_date, check_out_date FROM reservations "
+            "WHERE reservation_id = %s",
+            [reservation_id],
+        )
+        reservation = cur.fetchone()
+        if not reservation:
+            logger.error("Reservation not found", reservation_id=reservation_id)
+            return
 
-            nights = (reservation["check_out_date"] - reservation["check_in_date"]).days
-            if nights <= 0:
-                nights = 1
-            base_rate = folio_amount / nights if folio_amount > 0 else 100.0
+        nights = (reservation["check_out_date"] - reservation["check_in_date"]).days
+        if nights <= 0:
+            nights = 1
+        base_rate = folio_amount / nights if folio_amount > 0 else 100.0
 
-            # Get current tier (before earning)
-            cur.execute(
-                "SELECT loyalty_tier, total_stays FROM guests WHERE guest_id = %s",
-                [guest_id],
-            )
-            guest = cur.fetchone()
-            if not guest:
-                logger.error("Guest not found", guest_id=guest_id)
-                return
+        # Get current tier (before earning)
+        cur.execute(
+            "SELECT loyalty_tier, total_stays FROM guests WHERE guest_id = %s",
+            [guest_id],
+        )
+        guest = cur.fetchone()
+        if not guest:
+            logger.error("Guest not found", guest_id=guest_id)
+            return
 
-            current_tier = guest["loyalty_tier"]
+        current_tier = guest["loyalty_tier"]
 
-            # Earn points (atomic, uses SELECT FOR UPDATE internally)
-            earn_result = earn_points(conn, guest_id, reservation_id, base_rate, nights, current_tier)
+        # Earn points (atomic, uses SELECT FOR UPDATE internally)
+        earn_result = earn_points(conn, guest_id, reservation_id, base_rate, nights, current_tier)
 
-            # Increment total_stays
-            cur.execute(
-                "UPDATE guests SET total_stays = total_stays + 1, updated_at = now() "
-                "WHERE guest_id = %s",
-                [guest_id],
-            )
+        # Increment total_stays
+        cur.execute(
+            "UPDATE guests SET total_stays = total_stays + 1, updated_at = now() "
+            "WHERE guest_id = %s",
+            [guest_id],
+        )
 
-            # Recalculate tier (may upgrade)
-            new_tier = recalculate_tier(conn, guest_id)
+        # Recalculate tier (may upgrade)
+        new_tier = recalculate_tier(conn, guest_id)
 
-            conn.commit()
+        conn.commit()
 
     # Publish points earned event (best-effort)
     try:

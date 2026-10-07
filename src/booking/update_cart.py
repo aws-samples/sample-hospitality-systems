@@ -8,15 +8,19 @@ relevant fields change. Extends the cart expiration by 30 minutes.
 Public endpoint — no authentication required.
 """
 
-import json
-from utils.logger import get_logger
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, not_found, server_error, transform_keys
-from utils.validation import parse_body, validate_uuid, validate_date, validate_date_range
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
+from utils.validation import (
+    parse_body,
+    validate_date,
+    validate_date_range,
+    validate_uuid,
+)
 
 logger = get_logger("booking")
 
@@ -155,7 +159,7 @@ def handler(event, context):
                 conn.commit()
                 return bad_request(f"Cart is no longer active. Current status: {cart['status']}")
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if cart["expires_at"] < now:
                 conn.commit()
                 return bad_request("Cart has expired. Please create a new cart.")
@@ -307,6 +311,6 @@ def handler(event, context):
 
         return ok(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error updating booking cart")
         return server_error("Failed to update booking cart.")

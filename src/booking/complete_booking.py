@@ -9,22 +9,29 @@ within a single database transaction.
 Authentication required — guest must be logged in.
 """
 
-import json
-from utils.logger import get_logger
+import contextlib
 import os
 import secrets
 import string
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from types import SimpleNamespace
 
+from utils.auth import get_claims, has_group
 from utils.database import get_conn
-from utils.response import ok, error, created, bad_request, not_found, server_error, forbidden, transform_keys
-from utils.auth import get_claims, get_guest_id, has_group
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import (
+    bad_request,
+    created,
+    error,
+    forbidden,
+    not_found,
+    server_error,
+)
+from utils.stripe_client import cancel_payment_intent, capture_payment
 from utils.validation import parse_body, require_fields, validate_uuid
-from utils.stripe_client import capture_payment, cancel_payment_intent
 
 logger = get_logger("booking")
 
@@ -131,7 +138,7 @@ def handler(event, context):
                 conn.commit()
                 return bad_request(f"Cart is no longer active. Current status: {cart['status']}")
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if cart["expires_at"] < now:
                 conn.commit()
                 return bad_request("Cart has expired. Please create a new cart.")
@@ -484,7 +491,7 @@ def handler(event, context):
                 with conn2.cursor() as cur:
                     cur.execute(
                         "UPDATE payment_authorizations SET status = 'CAPTURED', updated_at = %s WHERE authorization_id = %s",
-                        (datetime.now(timezone.utc), authorization_id),
+                        (datetime.now(UTC), authorization_id),
                     )
                     cur.execute(
                         """
@@ -493,17 +500,15 @@ def handler(event, context):
                             stripe_charge_id, receipt_url, created_at
                         ) VALUES (%s, %s, %s, %s, %s, %s)
                         """,
-                        (capture_id, authorization_id, total_after_tax, stripe_charge_id, receipt_url, datetime.now(timezone.utc)),
+                        (capture_id, authorization_id, total_after_tax, stripe_charge_id, receipt_url, datetime.now(UTC)),
                     )
                 conn2.commit()
                 capture_recorded = True
                 break
             except Exception as cap_err:
                 record_err = cap_err
-                try:
+                with contextlib.suppress(Exception):
                     conn2.rollback()
-                except Exception:
-                    pass
                 logger.warning(
                     "Failed to record capture in DB",
                     attempt=attempt + 1,
@@ -629,6 +634,6 @@ def handler(event, context):
             "Room type is no longer available for the requested dates. "
             "Another guest may have just booked it. Please try again.",
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Error completing booking")
         return server_error("Failed to complete booking.")

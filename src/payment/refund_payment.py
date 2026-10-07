@@ -5,18 +5,18 @@ Creates a full or partial refund against a captured payment via Stripe.
 Records the refund in the database and publishes a payment.refunded event.
 """
 
-from utils.logger import get_logger
 import os
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from utils.database import get_conn
-from utils.response import ok, bad_request, not_found, forbidden, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
 from utils.events import publish_event
-from utils.validation import parse_body, require_fields, validate_uuid
+from utils.logger import get_logger
+from utils.response import bad_request, forbidden, not_found, ok, server_error
 from utils.stripe_client import create_refund
+from utils.validation import parse_body, require_fields, validate_uuid
 
 logger = get_logger("payment")
 
@@ -167,7 +167,7 @@ def handler(event, context):
 
             # Insert refund record (FK to capture; amount in dollars)
             refund_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -232,6 +232,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error processing refund")
         return server_error("Failed to process refund.")

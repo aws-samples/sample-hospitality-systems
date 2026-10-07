@@ -7,24 +7,29 @@ available inventory for each date in the range and publishes a
 reservation.created event.
 """
 
-from utils.logger import get_logger
 import secrets
 import string
 import uuid
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
+from utils.auth import get_guest_id
 from utils.database import get_conn
-from utils.response import ok, created, bad_request, not_found, server_error, transform_keys
-from utils.auth import get_claims, get_guest_id
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import (
+    bad_request,
+    created,
+    not_found,
+    server_error,
+)
 from utils.validation import (
     parse_body,
     require_fields,
-    validate_uuid,
     validate_date,
     validate_date_range,
+    validate_uuid,
 )
 
 logger = get_logger("crs")
@@ -209,7 +214,7 @@ def handler(event, context):
             # Generate confirmation number
             confirmation_number = _generate_confirmation_number()
             reservation_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # Snapshot rate plan and room type names
             booked_room_type_name = room_type["name"]
@@ -302,6 +307,6 @@ def handler(event, context):
 
         return created(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error creating reservation")
         return server_error("Failed to create reservation.")

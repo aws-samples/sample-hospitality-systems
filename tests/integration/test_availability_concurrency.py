@@ -18,7 +18,6 @@ import uuid
 
 import pytest
 
-
 # The exact capacity-guarded claim used by complete_booking Step F.
 CLAIM_SQL = """
     UPDATE availability SET sold = sold + 1

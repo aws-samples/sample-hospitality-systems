@@ -24,8 +24,8 @@ preflight is still handled by API Gateway's Cors property.
 import json
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 # Allowed origin for the actual (proxy) responses. Defaults to "*" (matches the
 # non-prod Cors config and serves both frontends); set CORS_ALLOW_ORIGIN to a
@@ -89,7 +89,7 @@ def _build_response(status_code: int, body: dict) -> dict:
     }
 
 
-def ok(data: Any, metadata: Optional[dict] = None) -> dict:
+def ok(data: Any, metadata: dict | None = None) -> dict:
     """
     Return a 200 OK response with the standard success envelope.
 
@@ -105,7 +105,7 @@ def ok(data: Any, metadata: Optional[dict] = None) -> dict:
         "data": transform_keys(data),
         "metadata": {
             "requestId": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         },
     }
     if metadata:
@@ -128,13 +128,13 @@ def created(data: Any) -> dict:
         "data": transform_keys(data),
         "metadata": {
             "requestId": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         },
     }
     return _build_response(201, response_body)
 
 
-def error(status_code: int, code: str, message: str, details: Optional[dict] = None) -> dict:
+def error(status_code: int, code: str, message: str, details: dict | None = None) -> dict:
     """
     Return an error response with the standard error envelope.
 

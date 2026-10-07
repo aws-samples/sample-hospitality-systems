@@ -1,14 +1,15 @@
 """Unit tests for loyalty utilities."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from utils.loyalty import (
-    earn_points,
-    redeem_points,
-    adjust_points,
-    recalculate_tier,
     TIER_MULTIPLIERS,
     TIER_THRESHOLDS,
+    adjust_points,
+    earn_points,
+    recalculate_tier,
+    redeem_points,
 )
 
 

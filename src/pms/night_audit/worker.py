@@ -9,9 +9,10 @@ import json
 import os
 import uuid
 from datetime import date, datetime
-from utils.logger import get_logger
+
 from utils.database import get_conn
 from utils.events import publish_event
+from utils.logger import get_logger
 
 logger = get_logger("pms-night-audit")
 
@@ -31,19 +32,18 @@ def handler(event, context):
     properties_processed = 0
     total_charges_posted = 0
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Get all active properties
-            cur.execute("SELECT property_id, name FROM properties WHERE is_active = true")
-            properties = cur.fetchall()
+    with get_conn() as conn, conn.cursor() as cur:
+        # Get all active properties
+        cur.execute("SELECT property_id, name FROM properties WHERE is_active = true")
+        properties = cur.fetchall()
 
-            for prop in properties:
-                property_id = prop["property_id"]
-                result = _process_property(cur, property_id, audit_date, triggered_by)
-                properties_processed += 1
-                total_charges_posted += result.get("charges_posted", 0)
+        for prop in properties:
+            property_id = prop["property_id"]
+            result = _process_property(cur, property_id, audit_date, triggered_by)
+            properties_processed += 1
+            total_charges_posted += result.get("charges_posted", 0)
 
-            conn.commit()
+        conn.commit()
 
     # Publish completion event (best-effort)
     try:

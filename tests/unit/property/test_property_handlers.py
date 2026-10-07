@@ -9,7 +9,7 @@ rejection paths, and not-found handling.
 
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -135,7 +135,7 @@ class TestGetProperty:
         JSON-safe types (exercises _serialize's type branches)."""
         mock_db.queue(fetchone={
             "property_id": uuid.UUID(VALID_UUID),
-            "created_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            "created_at": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
             "opened_on": date(2020, 6, 1),
             "nightly_floor": Decimal("129.99"),
             "name": "Typed Hotel",
@@ -204,7 +204,7 @@ class TestGetRoomType:
         mock_db.queue(fetchone={
             "room_type_id": uuid.UUID(VALID_UUID_2),
             "base_price": Decimal("88.50"),
-            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "created_at": datetime(2026, 1, 1, tzinfo=UTC),
             "name": "King",
         })
         monkeypatch.setattr(get_room_type, "get_conn", lambda: mock_db.conn)

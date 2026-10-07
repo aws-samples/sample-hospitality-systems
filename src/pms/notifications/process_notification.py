@@ -7,6 +7,7 @@ Handles: reservation.confirmed, checkinout.checked_in, billing.payment_processed
 
 import json
 import os
+
 from utils.logger import get_logger
 
 logger = get_logger("pms-notifications")
@@ -55,7 +56,7 @@ def handler(event, context):
             else:
                 logger.info("No notification template for event", detail_type=detail_type)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to process notification",
                            message_id=record.get("messageId"))
             failures.append({"itemIdentifier": record["messageId"]})
@@ -95,7 +96,6 @@ def _send_checkout_receipt(detail):
     """Send checkout receipt email."""
     guest_id = _pick(detail, "guestId", "guest_id")
     amount = float(_pick(detail, "amount", "totalAmount", "total_amount") or 0)
-    reservation_id = _pick(detail, "reservationId", "reservation_id")
 
     email = _get_guest_email(guest_id)
     if not email:
@@ -169,11 +169,10 @@ def _get_guest_email(guest_id):
         return None
 
     from utils.database import get_conn
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT email FROM guests WHERE guest_id = %s", [guest_id])
-            row = cur.fetchone()
-            return row["email"] if row else None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT email FROM guests WHERE guest_id = %s", [guest_id])
+        row = cur.fetchone()
+        return row["email"] if row else None
 
 
 def _send_email(to_email, subject, body_html):
@@ -194,6 +193,6 @@ def _send_email(to_email, subject, body_html):
                 },
             },
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to send email via SES", to=to_email, subject=subject)
         # Don't re-raise — notification failure shouldn't block the workflow

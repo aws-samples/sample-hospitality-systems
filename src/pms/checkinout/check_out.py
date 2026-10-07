@@ -7,14 +7,14 @@ Triggers billing and housekeeping via event.
 """
 
 import json
-import os
-from utils.logger import get_logger
-from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.validation import validate_uuid, parse_body
-from utils.events import publish_event
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
+
 from utils.auth import get_user_id
+from utils.database import get_conn
+from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
+from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("pms-checkinout")
 
@@ -41,56 +41,55 @@ def handler(event, context):
         body = parse_body(event) or {}
         express_checkout = body.get("expressCheckout", False)
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT reservation_id, property_id, guest_id, room_id, "
-                    "room_type_id, status, check_out_task_token "
-                    "FROM reservations WHERE reservation_id = %s",
-                    [reservation_id],
-                )
-                reservation = cur.fetchone()
-                if not reservation:
-                    return error(404, "NOT_FOUND", "Stay not found")
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT reservation_id, property_id, guest_id, room_id, "
+                "room_type_id, status, check_out_task_token "
+                "FROM reservations WHERE reservation_id = %s",
+                [reservation_id],
+            )
+            reservation = cur.fetchone()
+            if not reservation:
+                return error(404, "NOT_FOUND", "Stay not found")
 
-                verify_property_access(event, str(reservation["property_id"]))
+            verify_property_access(event, str(reservation["property_id"]))
 
-                if reservation["status"] != "CHECKED_IN":
-                    return error(
-                        409, "INVALID_STATE",
-                        f"Guest must be CHECKED_IN for checkout, current: {reservation['status']}"
-                    )
+            if reservation["status"] != "CHECKED_IN":
+                return error(
+                    409, "INVALID_STATE",
+                    f"Guest must be CHECKED_IN for checkout, current: {reservation['status']}"
+                )
 
-                # Get room number for event
-                cur.execute(
-                    "SELECT room_number FROM rooms WHERE room_id = %s",
-                    [reservation["room_id"]],
-                )
-                room = cur.fetchone()
-                room_number = room["room_number"] if room else ""
+            # Get room number for event
+            cur.execute(
+                "SELECT room_number FROM rooms WHERE room_id = %s",
+                [reservation["room_id"]],
+            )
+            room = cur.fetchone()
+            room_number = room["room_number"] if room else ""
 
-                # Execute checkout
-                cur.execute(
-                    "UPDATE reservations SET status = 'CHECKED_OUT', "
-                    "checked_out_at = now(), updated_at = now() WHERE reservation_id = %s",
-                    [reservation_id],
-                )
-                cur.execute(
-                    "UPDATE rooms SET status = 'DIRTY', updated_at = now() WHERE room_id = %s",
-                    [reservation["room_id"]],
-                )
-                cur.execute(
-                    "INSERT INTO checkinout_records "
-                    "(reservation_id, property_id, guest_id, room_id, room_number, "
-                    "record_type, performed_by) "
-                    "VALUES (%s, %s, %s, %s, %s, 'CHECKOUT', %s)",
-                    [
-                        reservation_id, reservation["property_id"],
-                        reservation["guest_id"], reservation["room_id"],
-                        room_number, staff_user_id,
-                    ],
-                )
-                conn.commit()
+            # Execute checkout
+            cur.execute(
+                "UPDATE reservations SET status = 'CHECKED_OUT', "
+                "checked_out_at = now(), updated_at = now() WHERE reservation_id = %s",
+                [reservation_id],
+            )
+            cur.execute(
+                "UPDATE rooms SET status = 'DIRTY', updated_at = now() WHERE room_id = %s",
+                [reservation["room_id"]],
+            )
+            cur.execute(
+                "INSERT INTO checkinout_records "
+                "(reservation_id, property_id, guest_id, room_id, room_number, "
+                "record_type, performed_by) "
+                "VALUES (%s, %s, %s, %s, %s, 'CHECKOUT', %s)",
+                [
+                    reservation_id, reservation["property_id"],
+                    reservation["guest_id"], reservation["room_id"],
+                    room_number, staff_user_id,
+                ],
+            )
+            conn.commit()
 
         # Advance Step Functions
         if reservation.get("check_out_task_token"):
@@ -129,6 +128,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error during checkout")
         return server_error()

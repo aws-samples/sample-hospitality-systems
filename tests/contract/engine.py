@@ -12,11 +12,10 @@ A diff means the API contract changed.
 
 import json
 import os
-import urllib.request
 import urllib.error
+import urllib.request
 
 import boto3
-
 from matrix import VOLATILE_KEYS
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")

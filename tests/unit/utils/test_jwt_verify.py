@@ -18,10 +18,10 @@ import importlib
 import json
 import time
 
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-import jwt
 from jwt import PyJWTError
 
 POOL_ID = "us-east-1_TESTPOOL"

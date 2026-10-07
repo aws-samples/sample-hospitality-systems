@@ -6,11 +6,12 @@ Returns night audit metrics for a property on a given date.
 """
 
 from datetime import date
-from utils.logger import get_logger
+
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
 from utils.validation import validate_uuid
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
 
 logger = get_logger("pms-night-audit")
 
@@ -28,15 +29,14 @@ def handler(event, context):
         params = event.get("queryStringParameters") or {}
         audit_date = params.get("date", str(date.today()))
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT run_id, audit_date, property_id, metrics, triggered_by, created_at "
-                    "FROM night_audit_runs "
-                    "WHERE property_id = %s AND audit_date = %s",
-                    [property_id, audit_date],
-                )
-                report = cur.fetchone()
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT run_id, audit_date, property_id, metrics, triggered_by, created_at "
+                "FROM night_audit_runs "
+                "WHERE property_id = %s AND audit_date = %s",
+                [property_id, audit_date],
+            )
+            report = cur.fetchone()
 
         if not report:
             return error(404, "NOT_FOUND",
@@ -55,6 +55,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting audit report")
         return server_error()

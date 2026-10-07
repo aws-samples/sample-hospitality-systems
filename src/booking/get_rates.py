@@ -8,14 +8,13 @@ overrides, discounts, taxes, and cancellation policy.
 Public endpoint — no authentication required.
 """
 
-from utils.logger import get_logger
-from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from uuid import UUID
+from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, not_found, server_error, transform_keys
-from utils.validation import validate_uuid, validate_date, validate_date_range
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
+from utils.validation import validate_date, validate_date_range, validate_uuid
 
 logger = get_logger("booking")
 
@@ -255,6 +254,6 @@ def handler(event, context):
             "rate_options": rate_options,
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error fetching rates")
         return server_error("Failed to fetch rates.")

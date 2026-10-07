@@ -13,16 +13,16 @@ Cancellation policies:
     NON_REFUNDABLE - 100% of total
 """
 
-from utils.logger import get_logger
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
+from utils.auth import get_guest_id, has_group
 from utils.database import get_conn
-from utils.response import ok, not_found, bad_request, server_error, transform_keys
-from utils.auth import get_claims, get_guest_id, has_group
-from utils.response import forbidden as forbidden_response
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
+from utils.response import forbidden as forbidden_response
 from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("crs")
@@ -145,7 +145,7 @@ def handler(event, context):
                     "Only CONFIRMED reservations can be cancelled."
                 )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # Get date range for inventory adjustment
             check_in = reservation["check_in_date"]
@@ -224,6 +224,6 @@ def handler(event, context):
 
         return ok(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error cancelling reservation")
         return server_error("Failed to cancel reservation.")

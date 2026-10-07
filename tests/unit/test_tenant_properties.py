@@ -5,25 +5,24 @@ cross-property isolation, points accumulation, and tier-recalculation
 idempotency.
 """
 
-import pytest
-from hypothesis import given, settings, assume
-from hypothesis import strategies as st
 from unittest.mock import MagicMock
 
-from utils.tenant import (
-    get_property_id,
-    verify_property_access,
-    get_accessible_properties,
-    ForbiddenError,
-)
+import pytest
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 from utils.loyalty import (
-    earn_points,
-    redeem_points,
-    recalculate_tier,
     TIER_MULTIPLIERS,
     TIER_THRESHOLDS,
+    earn_points,
+    recalculate_tier,
+    redeem_points,
 )
-
+from utils.tenant import (
+    ForbiddenError,
+    get_accessible_properties,
+    get_property_id,
+    verify_property_access,
+)
 
 # =============================================================================
 # Custom Strategies
@@ -157,16 +156,6 @@ class TestTierRecalculationProperties:
     @settings(max_examples=100)
     def test_recalculate_tier_is_idempotent(self, total_stays):
         """IDEMPOTENCY: recalculate_tier applied twice yields same result as once."""
-        # Determine what tier should be
-        if total_stays >= 20:
-            expected_tier = "DIAMOND"
-        elif total_stays >= 10:
-            expected_tier = "GOLD"
-        elif total_stays >= 5:
-            expected_tier = "SILVER"
-        else:
-            expected_tier = "NONE"
-
         # First application: start from NONE
         conn1, cursor1 = _mock_conn(total_stays=total_stays, tier="NONE")
         result1 = recalculate_tier(conn1, "guest-1")

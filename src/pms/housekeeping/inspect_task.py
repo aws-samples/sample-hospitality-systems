@@ -6,11 +6,12 @@ Pass or fail room inspection after cleaning.
 """
 
 import json
-from utils.logger import get_logger
+
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.validation import validate_uuid, parse_body
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
+from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("pms-housekeeping")
 
@@ -43,45 +44,44 @@ def handler(event, context):
         if notes and len(notes) > 2000:
             return error(400, "VALIDATION_ERROR", "notes must be 2000 characters or less")
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT task_id, property_id, room_id, status, inspection_task_token "
-                    "FROM housekeeping_tasks WHERE task_id = %s",
-                    [task_id],
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT task_id, property_id, room_id, status, inspection_task_token "
+                "FROM housekeeping_tasks WHERE task_id = %s",
+                [task_id],
+            )
+            task = cur.fetchone()
+            if not task:
+                return error(404, "NOT_FOUND", "Task not found")
+
+            verify_property_access(event, str(task["property_id"]))
+
+            if task["status"] != "INSPECTING":
+                return error(
+                    409, "INVALID_STATE",
+                    f"Task must be in INSPECTING status, current: {task['status']}"
                 )
-                task = cur.fetchone()
-                if not task:
-                    return error(404, "NOT_FOUND", "Task not found")
 
-                verify_property_access(event, str(task["property_id"]))
+            if passed:
+                cur.execute(
+                    "UPDATE housekeeping_tasks SET status = 'INSPECTED', "
+                    "inspected_at = now(), notes = COALESCE(%s, notes), updated_at = now() "
+                    "WHERE task_id = %s",
+                    [notes or None, task_id],
+                )
+            else:
+                # Record the failure reason in notes, but leave status alone:
+                # the SFN's InspectionDecision will route back to
+                # UpdateRoomToCleaning, which transitions the task to
+                # CLEANING via store_cleaning_token. Setting FAILED here
+                # would orphan the task because the loop-back overwrites it.
+                cur.execute(
+                    "UPDATE housekeeping_tasks SET notes = %s, updated_at = now() "
+                    "WHERE task_id = %s",
+                    [f"Inspection failed: {notes}" if notes else "Inspection failed", task_id],
+                )
 
-                if task["status"] != "INSPECTING":
-                    return error(
-                        409, "INVALID_STATE",
-                        f"Task must be in INSPECTING status, current: {task['status']}"
-                    )
-
-                if passed:
-                    cur.execute(
-                        "UPDATE housekeeping_tasks SET status = 'INSPECTED', "
-                        "inspected_at = now(), notes = COALESCE(%s, notes), updated_at = now() "
-                        "WHERE task_id = %s",
-                        [notes or None, task_id],
-                    )
-                else:
-                    # Record the failure reason in notes, but leave status alone:
-                    # the SFN's InspectionDecision will route back to
-                    # UpdateRoomToCleaning, which transitions the task to
-                    # CLEANING via store_cleaning_token. Setting FAILED here
-                    # would orphan the task because the loop-back overwrites it.
-                    cur.execute(
-                        "UPDATE housekeeping_tasks SET notes = %s, updated_at = now() "
-                        "WHERE task_id = %s",
-                        [f"Inspection failed: {notes}" if notes else "Inspection failed", task_id],
-                    )
-
-                conn.commit()
+            conn.commit()
 
         # Advance Step Functions. Both pass and fail are reported via
         # send_task_success — the InspectionDecision Choice state in the ASL
@@ -108,6 +108,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error inspecting task")
         return server_error()

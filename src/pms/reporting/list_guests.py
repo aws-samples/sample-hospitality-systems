@@ -7,10 +7,10 @@ Returns guest directory rows with loyalty + last/next stay context. Chain-wide
 staff still only see *stays* at their property via /stays.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.tenant import require_groups, ForbiddenError
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups
 
 logger = get_logger("pms-reporting")
 
@@ -48,62 +48,61 @@ def handler(event, context):
             tier_val, tier_val,
         ]
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS total "
+                "FROM guests g "
+                "WHERE (%s::text IS NULL OR "
+                "       (g.first_name ILIKE %s OR g.last_name ILIKE %s OR g.email ILIKE %s)) "
+                "AND (%s::text IS NULL OR g.loyalty_tier = %s::text)",
+                filter_params,
+            )
+            total = cur.fetchone()["total"]
+
+            # Two fully-static fetch queries — pick by sort parameter.
+            if sort == "recent":
                 cur.execute(
-                    "SELECT COUNT(*) AS total "
+                    "SELECT g.guest_id, g.first_name, g.last_name, g.email, g.phone, "
+                    "g.loyalty_tier, g.points_balance, g.total_stays, "
+                    "(SELECT MAX(r.check_in_date) FROM reservations r "
+                    "   WHERE r.guest_id = g.guest_id "
+                    "     AND r.status IN ('CHECKED_OUT', 'CHECKED_IN') "
+                    ") AS last_stay_date, "
+                    "(SELECT MIN(r.check_in_date) FROM reservations r "
+                    "   WHERE r.guest_id = g.guest_id "
+                    "     AND r.status IN ('CONFIRMED', 'CHECKED_IN') "
+                    "     AND r.check_in_date >= CURRENT_DATE "
+                    ") AS next_stay_date "
                     "FROM guests g "
                     "WHERE (%s::text IS NULL OR "
                     "       (g.first_name ILIKE %s OR g.last_name ILIKE %s OR g.email ILIKE %s)) "
-                    "AND (%s::text IS NULL OR g.loyalty_tier = %s::text)",
-                    filter_params,
+                    "AND (%s::text IS NULL OR g.loyalty_tier = %s::text) "
+                    "ORDER BY last_stay_date DESC NULLS LAST, g.last_name ASC "
+                    "LIMIT %s OFFSET %s",
+                    filter_params + [limit, offset],
                 )
-                total = cur.fetchone()["total"]
-
-                # Two fully-static fetch queries — pick by sort parameter.
-                if sort == "recent":
-                    cur.execute(
-                        "SELECT g.guest_id, g.first_name, g.last_name, g.email, g.phone, "
-                        "g.loyalty_tier, g.points_balance, g.total_stays, "
-                        "(SELECT MAX(r.check_in_date) FROM reservations r "
-                        "   WHERE r.guest_id = g.guest_id "
-                        "     AND r.status IN ('CHECKED_OUT', 'CHECKED_IN') "
-                        ") AS last_stay_date, "
-                        "(SELECT MIN(r.check_in_date) FROM reservations r "
-                        "   WHERE r.guest_id = g.guest_id "
-                        "     AND r.status IN ('CONFIRMED', 'CHECKED_IN') "
-                        "     AND r.check_in_date >= CURRENT_DATE "
-                        ") AS next_stay_date "
-                        "FROM guests g "
-                        "WHERE (%s::text IS NULL OR "
-                        "       (g.first_name ILIKE %s OR g.last_name ILIKE %s OR g.email ILIKE %s)) "
-                        "AND (%s::text IS NULL OR g.loyalty_tier = %s::text) "
-                        "ORDER BY last_stay_date DESC NULLS LAST, g.last_name ASC "
-                        "LIMIT %s OFFSET %s",
-                        filter_params + [limit, offset],
-                    )
-                else:
-                    cur.execute(
-                        "SELECT g.guest_id, g.first_name, g.last_name, g.email, g.phone, "
-                        "g.loyalty_tier, g.points_balance, g.total_stays, "
-                        "(SELECT MAX(r.check_in_date) FROM reservations r "
-                        "   WHERE r.guest_id = g.guest_id "
-                        "     AND r.status IN ('CHECKED_OUT', 'CHECKED_IN') "
-                        ") AS last_stay_date, "
-                        "(SELECT MIN(r.check_in_date) FROM reservations r "
-                        "   WHERE r.guest_id = g.guest_id "
-                        "     AND r.status IN ('CONFIRMED', 'CHECKED_IN') "
-                        "     AND r.check_in_date >= CURRENT_DATE "
-                        ") AS next_stay_date "
-                        "FROM guests g "
-                        "WHERE (%s::text IS NULL OR "
-                        "       (g.first_name ILIKE %s OR g.last_name ILIKE %s OR g.email ILIKE %s)) "
-                        "AND (%s::text IS NULL OR g.loyalty_tier = %s::text) "
-                        "ORDER BY g.last_name ASC, g.first_name ASC "
-                        "LIMIT %s OFFSET %s",
-                        filter_params + [limit, offset],
-                    )
-                rows = cur.fetchall()
+            else:
+                cur.execute(
+                    "SELECT g.guest_id, g.first_name, g.last_name, g.email, g.phone, "
+                    "g.loyalty_tier, g.points_balance, g.total_stays, "
+                    "(SELECT MAX(r.check_in_date) FROM reservations r "
+                    "   WHERE r.guest_id = g.guest_id "
+                    "     AND r.status IN ('CHECKED_OUT', 'CHECKED_IN') "
+                    ") AS last_stay_date, "
+                    "(SELECT MIN(r.check_in_date) FROM reservations r "
+                    "   WHERE r.guest_id = g.guest_id "
+                    "     AND r.status IN ('CONFIRMED', 'CHECKED_IN') "
+                    "     AND r.check_in_date >= CURRENT_DATE "
+                    ") AS next_stay_date "
+                    "FROM guests g "
+                    "WHERE (%s::text IS NULL OR "
+                    "       (g.first_name ILIKE %s OR g.last_name ILIKE %s OR g.email ILIKE %s)) "
+                    "AND (%s::text IS NULL OR g.loyalty_tier = %s::text) "
+                    "ORDER BY g.last_name ASC, g.first_name ASC "
+                    "LIMIT %s OFFSET %s",
+                    filter_params + [limit, offset],
+                )
+            rows = cur.fetchall()
 
         guests = [
             {

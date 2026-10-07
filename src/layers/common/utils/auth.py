@@ -7,7 +7,7 @@ use a Cognito user pool authorizer, which places the verified token claims
 at event["requestContext"]["authorizer"]["claims"].
 """
 
-from typing import Any, Optional
+from typing import Any
 
 
 def get_claims(event: dict) -> dict[str, Any]:
@@ -63,7 +63,7 @@ def get_guest_id(event: dict) -> str:
     return claims["sub"]
 
 
-def get_email(event: dict) -> Optional[str]:
+def get_email(event: dict) -> str | None:
     """
     Extract the email from the JWT token, if present.
 
@@ -97,7 +97,7 @@ def get_roles(event: dict) -> list[str]:
     return [r.strip() for r in roles_claim.split(",") if r.strip()]
 
 
-def require_owner(event: dict, resource_guest_id: str) -> Optional[dict]:
+def require_owner(event: dict, resource_guest_id: str) -> dict | None:
     """
     Verify that the authenticated user owns the requested resource.
 
@@ -178,7 +178,7 @@ def require_groups(event: dict, *groups: str) -> None:
         raise ForbiddenError("Access denied: insufficient permissions")
 
 
-def get_region(event: dict) -> Optional[str]:
+def get_region(event: dict) -> str | None:
     """
     Extract the region from the JWT custom:region claim.
 

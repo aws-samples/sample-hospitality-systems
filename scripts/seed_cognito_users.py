@@ -11,8 +11,8 @@ Usage:
 """
 
 import argparse
+
 import boto3
-import json
 
 # ==============================================================================
 # Demo Guest Users (5-10 with varied loyalty tiers)
@@ -205,11 +205,11 @@ def create_user(client, user_pool_id, user_data, is_staff=False):
                 )
                 print(f"    Added to group: {group}")
 
-        print(f"    ✓ Created successfully")
+        print("    ✓ Created successfully")
         return True
 
     except client.exceptions.UsernameExistsException:
-        print(f"    ⚠ Already exists, skipping")
+        print("    ⚠ Already exists, skipping")
         return False
     except Exception as e:
         print(f"    ✗ Error: {e}")
@@ -230,7 +230,7 @@ def main():
     client = session.client("cognito-idp")
 
     print(f"\n{'='*60}")
-    print(f"AnyCompany Hotel PMS — Cognito User Seeding")
+    print("AnyCompany Hotel PMS — Cognito User Seeding")
     print(f"User Pool: {args.user_pool_id}")
     print(f"Region: {args.region}")
     print(f"{'='*60}\n")
@@ -260,14 +260,14 @@ def main():
 
     print(f"{'='*60}")
     print("Seeding complete!")
-    print(f"\nDemo Credentials:")
-    print(f"  Guest (Diamond): sarah.chen@example.com / AnyCompany2026!")
-    print(f"  Guest (Gold):    james.wilson@example.com / AnyCompany2026!")
-    print(f"  Guest (Silver):  david.park@example.com / AnyCompany2026!")
-    print(f"  Guest (None):    alex.johnson@example.com / AnyCompany2026!")
-    print(f"  Staff (Admin):   admin@anycompanyhotels.com / AnyCompanyAdmin2026!")
-    print(f"  Staff (FrontDesk): frontdesk@anycompanyhotels.com / AnyCompanyFD2026!")
-    print(f"  Staff (Housekeeping): housekeeping@anycompanyhotels.com / AnyCompanyHK2026!")
+    print("\nDemo Credentials:")
+    print("  Guest (Diamond): sarah.chen@example.com / AnyCompany2026!")
+    print("  Guest (Gold):    james.wilson@example.com / AnyCompany2026!")
+    print("  Guest (Silver):  david.park@example.com / AnyCompany2026!")
+    print("  Guest (None):    alex.johnson@example.com / AnyCompany2026!")
+    print("  Staff (Admin):   admin@anycompanyhotels.com / AnyCompanyAdmin2026!")
+    print("  Staff (FrontDesk): frontdesk@anycompanyhotels.com / AnyCompanyFD2026!")
+    print("  Staff (Housekeeping): housekeeping@anycompanyhotels.com / AnyCompanyHK2026!")
     print(f"{'='*60}\n")
 
 

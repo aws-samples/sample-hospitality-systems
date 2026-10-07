@@ -6,14 +6,14 @@ Assigns a room, updates reservation status, advances Step Functions lifecycle.
 """
 
 import json
-import os
-from utils.logger import get_logger
-from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.validation import validate_uuid, parse_body
-from utils.events import publish_event
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
+
 from utils.auth import get_user_id
+from utils.database import get_conn
+from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
+from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("pms-checkinout")
 
@@ -45,62 +45,61 @@ def handler(event, context):
         if notes and len(notes) > 2000:
             return error(400, "VALIDATION_ERROR", "Notes must be 2000 characters or less")
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Load reservation
-                cur.execute(
-                    "SELECT reservation_id, property_id, guest_id, room_type_id, room_id, "
-                    "status, check_in_task_token FROM reservations WHERE reservation_id = %s",
-                    [reservation_id],
+        with get_conn() as conn, conn.cursor() as cur:
+            # Load reservation
+            cur.execute(
+                "SELECT reservation_id, property_id, guest_id, room_type_id, room_id, "
+                "status, check_in_task_token FROM reservations WHERE reservation_id = %s",
+                [reservation_id],
+            )
+            reservation = cur.fetchone()
+            if not reservation:
+                return error(404, "NOT_FOUND", "Reservation not found")
+
+            # Tenant isolation
+            verify_property_access(event, str(reservation["property_id"]))
+
+            # Validate state
+            if reservation["status"] != "CONFIRMED":
+                return error(
+                    409, "INVALID_STATE",
+                    f"Reservation must be CONFIRMED for check-in, current: {reservation['status']}"
                 )
-                reservation = cur.fetchone()
-                if not reservation:
-                    return error(404, "NOT_FOUND", "Reservation not found")
 
-                # Tenant isolation
-                verify_property_access(event, str(reservation["property_id"]))
+            # Room assignment
+            if requested_room_id:
+                room = _get_specific_room(cur, requested_room_id)
+            else:
+                room = _find_available_room(cur, reservation["property_id"], reservation["room_type_id"])
 
-                # Validate state
-                if reservation["status"] != "CONFIRMED":
-                    return error(
-                        409, "INVALID_STATE",
-                        f"Reservation must be CONFIRMED for check-in, current: {reservation['status']}"
-                    )
+            if not room:
+                return error(409, "NO_ROOM_AVAILABLE", "No available room of the requested type")
 
-                # Room assignment
-                if requested_room_id:
-                    room = _get_specific_room(cur, requested_room_id)
-                else:
-                    room = _find_available_room(cur, reservation["property_id"], reservation["room_type_id"])
+            if room["status"] != "AVAILABLE":
+                return error(409, "ROOM_NOT_AVAILABLE", f"Room {room['room_number']} is not available")
 
-                if not room:
-                    return error(409, "NO_ROOM_AVAILABLE", "No available room of the requested type")
-
-                if room["status"] != "AVAILABLE":
-                    return error(409, "ROOM_NOT_AVAILABLE", f"Room {room['room_number']} is not available")
-
-                # Execute check-in (all in one transaction)
-                cur.execute(
-                    "UPDATE reservations SET status = 'CHECKED_IN', room_id = %s, "
-                    "checked_in_at = now(), updated_at = now() WHERE reservation_id = %s",
-                    [room["room_id"], reservation_id],
-                )
-                cur.execute(
-                    "UPDATE rooms SET status = 'OCCUPIED', updated_at = now() WHERE room_id = %s",
-                    [room["room_id"]],
-                )
-                cur.execute(
-                    "INSERT INTO checkinout_records "
-                    "(reservation_id, property_id, guest_id, room_id, room_number, "
-                    "record_type, performed_by, notes) "
-                    "VALUES (%s, %s, %s, %s, %s, 'CHECKIN', %s, %s)",
-                    [
-                        reservation_id, reservation["property_id"],
-                        reservation["guest_id"], room["room_id"],
-                        room["room_number"], staff_user_id, notes or None,
-                    ],
-                )
-                conn.commit()
+            # Execute check-in (all in one transaction)
+            cur.execute(
+                "UPDATE reservations SET status = 'CHECKED_IN', room_id = %s, "
+                "checked_in_at = now(), updated_at = now() WHERE reservation_id = %s",
+                [room["room_id"], reservation_id],
+            )
+            cur.execute(
+                "UPDATE rooms SET status = 'OCCUPIED', updated_at = now() WHERE room_id = %s",
+                [room["room_id"]],
+            )
+            cur.execute(
+                "INSERT INTO checkinout_records "
+                "(reservation_id, property_id, guest_id, room_id, room_number, "
+                "record_type, performed_by, notes) "
+                "VALUES (%s, %s, %s, %s, %s, 'CHECKIN', %s, %s)",
+                [
+                    reservation_id, reservation["property_id"],
+                    reservation["guest_id"], room["room_id"],
+                    room["room_number"], staff_user_id, notes or None,
+                ],
+            )
+            conn.commit()
 
         # Advance Step Functions (outside transaction)
         if reservation.get("check_in_task_token"):
@@ -140,7 +139,7 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error during check-in")
         return server_error()
 

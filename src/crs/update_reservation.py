@@ -8,21 +8,21 @@ If dates change, availability is revalidated and sold counts are adjusted
 recalculated when dates change.
 """
 
-from utils.logger import get_logger
-from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
-from utils.database import get_conn
-from utils.response import ok, not_found, bad_request, server_error, transform_keys
 from utils.auth import get_guest_id
-from utils.response import forbidden as forbidden_response
+from utils.database import get_conn
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
+from utils.response import forbidden as forbidden_response
 from utils.validation import (
     parse_body,
-    validate_uuid,
     validate_date,
     validate_date_range,
+    validate_uuid,
 )
 
 logger = get_logger("crs")
@@ -160,7 +160,7 @@ def handler(event, context):
             eff_adults = int(new_adults) if new_adults is not None else reservation["adults"]
             eff_children = int(new_children) if new_children is not None else reservation["children"]
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             room_type_id = reservation["room_type_id"]
 
             if dates_changed:
@@ -308,6 +308,6 @@ def handler(event, context):
 
         return ok(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error updating reservation")
         return server_error("Failed to update reservation.")

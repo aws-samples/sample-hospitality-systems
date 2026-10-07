@@ -15,6 +15,7 @@ Responsibilities:
 No AWS clients or network calls happen here — unit tests are offline.
 """
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -53,7 +54,6 @@ def pytest_collection_modifyitems(config, items):
 # under a unique synthetic module name and puts the handler's own dir on
 # sys.path first so its sibling imports (e.g. `from worker import handler`)
 # still resolve.
-import importlib.util
 
 
 def _load_handler(rel_path: str):

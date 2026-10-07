@@ -5,13 +5,13 @@ Retrieves a single property by ID with its associated room types
 as a nested array.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, not_found, bad_request, server_error, transform_keys
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
 from utils.validation import validate_uuid
 
 logger = get_logger("property")
@@ -79,6 +79,6 @@ def handler(event, context):
 
         return ok(property_data)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting property")
         return server_error("Failed to get property.")

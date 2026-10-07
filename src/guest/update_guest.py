@@ -6,15 +6,15 @@ their own profile. Email and cognito_sub cannot be changed.
 """
 
 import json
-from utils.logger import get_logger
 import uuid
-from datetime import datetime, date, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from utils.database import get_conn
-from utils.response import ok, not_found, forbidden, bad_request, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
 from utils.events import publish_event
+from utils.logger import get_logger
+from utils.response import bad_request, forbidden, not_found, ok, server_error
 from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("guest")
@@ -117,7 +117,7 @@ def handler(event, context):
                 return value
 
             values = [_merged(ck, col) for ck, col in ALLOWED_FIELDS.items()]
-            values.append(datetime.now(timezone.utc))  # updated_at
+            values.append(datetime.now(UTC))  # updated_at
             values.append(guest_id)  # WHERE
 
             # Static UPDATE. Column order matches ALLOWED_FIELDS (first_name,
@@ -172,6 +172,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error updating guest")
         return server_error("Failed to update guest.")

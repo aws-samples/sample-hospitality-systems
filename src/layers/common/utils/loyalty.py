@@ -5,9 +5,7 @@ Handles points earning, redemption, adjustment, and tier recalculation.
 All operations use SELECT FOR UPDATE to prevent concurrent overdraft.
 """
 
-from typing import Optional
 import uuid
-
 
 # Tier thresholds (based on total_stays)
 TIER_THRESHOLDS = {
@@ -32,7 +30,7 @@ POINTS_PER_FREE_NIGHT = 10000
 def earn_points(
     conn,
     guest_id: str,
-    reservation_id: Optional[str],
+    reservation_id: str | None,
     base_rate: float,
     nights: int,
     current_tier: str,
@@ -108,8 +106,8 @@ def redeem_points(
     conn,
     guest_id: str,
     points: int,
-    reservation_id: Optional[str] = None,
-    description: Optional[str] = None,
+    reservation_id: str | None = None,
+    description: str | None = None,
 ) -> dict:
     """
     Redeem loyalty points. Fails if insufficient balance.
@@ -250,7 +248,7 @@ def adjust_points(
     }
 
 
-def recalculate_tier(conn, guest_id: str) -> Optional[str]:
+def recalculate_tier(conn, guest_id: str) -> str | None:
     """
     Recalculate a guest's loyalty tier based on total_stays.
 

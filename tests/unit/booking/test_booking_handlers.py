@@ -7,7 +7,7 @@ flows are deferred to the integration layer.
 """
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 import pytest
 
@@ -178,10 +178,11 @@ class TestCompleteBooking:
 
     def test_other_guests_cart_forbidden(self, complete_booking, make_event, mock_db, monkeypatch):
         # A non-staff caller cannot complete a cart owned by a different guest.
-        from datetime import datetime, timezone, timedelta as _td
+        from datetime import datetime, timezone
+        from datetime import timedelta as _td
         active_cart = {
             "cart_id": CART, "guest_id": "owner-guest-id", "status": "ACTIVE",
-            "expires_at": datetime.now(timezone.utc) + _td(minutes=20),
+            "expires_at": datetime.now(UTC) + _td(minutes=20),
         }
         mock_db.queue(fetchone=active_cart)                      # cart lookup → owned by someone else
         mock_db.queue(fetchone={"guest_id": "caller-guest-id"})  # caller's own guest row → different id

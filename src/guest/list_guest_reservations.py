@@ -6,15 +6,15 @@ and pagination. Joins with properties to include the property name.
 Results are ordered by check-in date descending (most recent first).
 """
 
-from utils.logger import get_logger
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from utils.database import get_conn
-from utils.response import ok, not_found, forbidden, bad_request, server_error
 from utils.auth import get_claims
-from utils.validation import validate_uuid, validate_pagination
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import bad_request, forbidden, not_found, ok, server_error
+from utils.validation import validate_pagination, validate_uuid
 
 logger = get_logger("guest")
 
@@ -127,6 +127,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error listing guest reservations")
         return server_error("Failed to list reservations.")

@@ -5,17 +5,17 @@ Creates a new guest profile linked to the authenticated Cognito user.
 Also creates a corresponding Stripe customer for future payment operations.
 """
 
-from utils.logger import get_logger
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from utils.database import get_conn
-from utils.response import ok, error, created, bad_request, server_error, transform_keys
 from utils.auth import get_claims
+from utils.database import get_conn
 from utils.events import publish_event
-from utils.validation import parse_body, require_fields
+from utils.logger import get_logger
+from utils.response import created, error, ok, server_error
 from utils.stripe_client import create_customer
+from utils.validation import parse_body, require_fields
 
 logger = get_logger("guest")
 
@@ -77,7 +77,7 @@ def handler(event, context):
                     or (not existing["last_name"] and last_name)
                 )
                 if needs_update:
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     with conn.cursor() as cur:
                         cur.execute(
                             """
@@ -105,7 +105,7 @@ def handler(event, context):
 
             # Insert guest record
             guest_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -152,6 +152,6 @@ def handler(event, context):
 
         return created(serialized)
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error creating guest")
         return server_error("Failed to create guest.")

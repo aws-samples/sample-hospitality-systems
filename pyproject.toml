@@ -34,6 +34,37 @@ addopts = [
     "--import-mode=importlib",
 ]
 
+[tool.ruff]
+# Linting only — the Ruff formatter is intentionally not used here (run via
+# `make lint`). Matches the Lambda runtime so pyupgrade rules target 3.12.
+target-version = "py312"
+line-length = 88
+# Vendored/generated trees that aren't our source. `.gitignore` dirs (like
+# .venv-test) are excluded by Ruff automatically; these are the extras.
+extend-exclude = [
+    "htmlcov",
+    "frontend",
+    "pms-frontend",
+    "e2e",
+]
+
+[tool.ruff.lint]
+# Curated practical set: real bugs + dead code + modernization, low noise.
+#   E/F  pycodestyle errors + pyflakes (undefined names, unused imports/vars)
+#   I    import sorting (isort)
+#   B    flake8-bugbear (likely bugs)
+#   UP   pyupgrade (outdated syntax for the target version)
+#   C4   flake8-comprehensions
+#   SIM  flake8-simplify
+select = ["E", "F", "I", "B", "UP", "C4", "SIM"]
+# E501 (line-too-long) is a formatting concern, handled by a formatter rather
+# than the linter — ignored here since we lint only.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: unused imports/fixtures and long assert lines are common and fine.
+"tests/**" = ["F401", "F811", "E501"]
+
 [tool.coverage.run]
 source = ["src"]
 omit = [

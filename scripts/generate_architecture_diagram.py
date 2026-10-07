@@ -13,13 +13,13 @@ Usage:
     python3.12 scripts/generate_architecture_diagram.py
 """
 
-from diagrams import Diagram, Cluster, Edge
+from diagrams import Cluster, Diagram, Edge
 from diagrams.aws.analytics import Athena, KinesisDataFirehose
 from diagrams.aws.compute import Lambda
-from diagrams.aws.database import Aurora, RDS
-from diagrams.aws.integration import Eventbridge, SQS, StepFunctions
+from diagrams.aws.database import RDS, Aurora
+from diagrams.aws.integration import SQS, Eventbridge, StepFunctions
 from diagrams.aws.network import APIGateway, CloudFront
-from diagrams.aws.security import Cognito, WAF
+from diagrams.aws.security import WAF, Cognito
 from diagrams.aws.storage import S3
 from diagrams.onprem.client import Users
 

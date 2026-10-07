@@ -9,8 +9,8 @@ and anycompany.{domain} for source.
 import json
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import boto3
 
@@ -32,7 +32,7 @@ def publish_event(
     source: str,
     detail_type: str,
     detail: dict[str, Any],
-    correlation_id: Optional[str] = None,
+    correlation_id: str | None = None,
 ) -> dict:
     """
     Publish a domain event to the AnyCompany Hotel EventBridge bus.
@@ -61,7 +61,7 @@ def publish_event(
 
     detail["_metadata"] = {
         "correlationId": correlation_id,
-        "publishedAt": datetime.now(timezone.utc).isoformat(),
+        "publishedAt": datetime.now(UTC).isoformat(),
         "source": source,
         "detailType": detail_type,
     }
@@ -82,7 +82,7 @@ def publish_event(
 
 def publish_events(
     events: list[dict[str, Any]],
-    correlation_id: Optional[str] = None,
+    correlation_id: str | None = None,
 ) -> dict:
     """
     Publish multiple domain events to EventBridge in a single batch.
@@ -105,7 +105,7 @@ def publish_events(
     if correlation_id is None:
         correlation_id = str(uuid.uuid4())
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     entries = []
     for evt in events:

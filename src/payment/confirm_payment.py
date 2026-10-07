@@ -5,17 +5,17 @@ Captures a previously authorized Stripe PaymentIntent and records
 the capture in the database. Publishes a payment.captured event.
 """
 
-from utils.logger import get_logger
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from utils.database import get_conn
-from utils.response import ok, bad_request, not_found, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
 from utils.events import publish_event
-from utils.validation import parse_body, require_fields
+from utils.logger import get_logger
+from utils.response import bad_request, not_found, ok, server_error
 from utils.stripe_client import capture_payment
+from utils.validation import parse_body, require_fields
 
 logger = get_logger("payment")
 
@@ -86,7 +86,7 @@ def handler(event, context):
                 receipt_url = getattr(charge, "receipt_url", None)
 
             # Update authorization status
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -146,6 +146,6 @@ def handler(event, context):
     except KeyError:
         logger.exception("Missing auth claims")
         return server_error("Authentication context missing.")
-    except Exception as e:
+    except Exception:
         logger.exception("Error confirming payment")
         return server_error("Failed to confirm payment.")

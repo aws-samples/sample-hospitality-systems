@@ -9,8 +9,9 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta
-from utils.logger import get_logger
+
 from utils.database import get_conn
+from utils.logger import get_logger
 
 logger = get_logger("pms-billing")
 
@@ -56,7 +57,7 @@ def handler(event, context):
             else:
                 logger.info("Ignoring unhandled event type", detail_type=detail_type)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to process billing event",
                            message_id=record.get("messageId"))
             failures.append({"itemIdentifier": record["messageId"]})
@@ -80,54 +81,53 @@ def _create_folio_with_charges(detail):
         logger.error("Missing required fields in confirmed event", detail=detail)
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Idempotency check
+    with get_conn() as conn, conn.cursor() as cur:
+        # Idempotency check
+        cur.execute(
+            "SELECT folio_id FROM folios WHERE reservation_id = %s",
+            [reservation_id],
+        )
+        if cur.fetchone():
+            logger.info("Folio already exists, skipping", reservation_id=reservation_id)
+            return
+
+        # Calculate nights
+        check_in = datetime.strptime(check_in_date, "%Y-%m-%d").date()
+        check_out = datetime.strptime(check_out_date, "%Y-%m-%d").date()
+        nights = (check_out - check_in).days
+        if nights <= 0:
+            nights = 1
+
+        # Get nightly rate (from reservation total / nights as fallback)
+        nightly_rate = round(float(total_amount) / nights, 2) if total_amount else 0
+
+        # Create folio
+        folio_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO folios "
+            "(folio_id, reservation_id, property_id, guest_id, "
+            "check_in_date, check_out_date, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'OPEN')",
+            [folio_id, reservation_id, property_id, guest_id,
+             check_in_date, check_out_date],
+        )
+
+        # Create room rate charges (one per night)
+        for night in range(nights):
+            charge_date = check_in + timedelta(days=night)
+            charge_id = str(uuid.uuid4())
             cur.execute(
-                "SELECT folio_id FROM folios WHERE reservation_id = %s",
-                [reservation_id],
-            )
-            if cur.fetchone():
-                logger.info("Folio already exists, skipping", reservation_id=reservation_id)
-                return
-
-            # Calculate nights
-            check_in = datetime.strptime(check_in_date, "%Y-%m-%d").date()
-            check_out = datetime.strptime(check_out_date, "%Y-%m-%d").date()
-            nights = (check_out - check_in).days
-            if nights <= 0:
-                nights = 1
-
-            # Get nightly rate (from reservation total / nights as fallback)
-            nightly_rate = round(float(total_amount) / nights, 2) if total_amount else 0
-
-            # Create folio
-            folio_id = str(uuid.uuid4())
-            cur.execute(
-                "INSERT INTO folios "
-                "(folio_id, reservation_id, property_id, guest_id, "
-                "check_in_date, check_out_date, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'OPEN')",
-                [folio_id, reservation_id, property_id, guest_id,
-                 check_in_date, check_out_date],
+                "INSERT INTO charges "
+                "(charge_id, folio_id, charge_type, description, amount, charge_date) "
+                "VALUES (%s, %s, 'ROOM_RATE', %s, %s, %s)",
+                [
+                    charge_id, folio_id,
+                    f"Room charge - Night {night + 1}",
+                    nightly_rate, str(charge_date),
+                ],
             )
 
-            # Create room rate charges (one per night)
-            for night in range(nights):
-                charge_date = check_in + timedelta(days=night)
-                charge_id = str(uuid.uuid4())
-                cur.execute(
-                    "INSERT INTO charges "
-                    "(charge_id, folio_id, charge_type, description, amount, charge_date) "
-                    "VALUES (%s, %s, 'ROOM_RATE', %s, %s, %s)",
-                    [
-                        charge_id, folio_id,
-                        f"Room charge - Night {night + 1}",
-                        nightly_rate, str(charge_date),
-                    ],
-                )
-
-            conn.commit()
+        conn.commit()
 
     logger.info("Created folio with charges",
                folio_id=folio_id, reservation_id=reservation_id, nights=nights)
@@ -139,34 +139,33 @@ def _void_folio(detail):
     if not reservation_id:
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT folio_id, status FROM folios WHERE reservation_id = %s",
-                [reservation_id],
-            )
-            folio = cur.fetchone()
-            if not folio:
-                logger.info("No folio to void", reservation_id=reservation_id)
-                return
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT folio_id, status FROM folios WHERE reservation_id = %s",
+            [reservation_id],
+        )
+        folio = cur.fetchone()
+        if not folio:
+            logger.info("No folio to void", reservation_id=reservation_id)
+            return
 
-            if folio["status"] != "OPEN":
-                logger.info("Folio not in OPEN state, cannot void",
-                           folio_id=str(folio["folio_id"]), status=folio["status"])
-                return
+        if folio["status"] != "OPEN":
+            logger.info("Folio not in OPEN state, cannot void",
+                       folio_id=str(folio["folio_id"]), status=folio["status"])
+            return
 
-            # Void folio
-            cur.execute(
-                "UPDATE folios SET status = 'VOID', updated_at = now() WHERE folio_id = %s",
-                [folio["folio_id"]],
-            )
-            # Void all charges
-            cur.execute(
-                "UPDATE charges SET status = 'VOIDED', voided_at = now() "
-                "WHERE folio_id = %s AND status = 'ACTIVE'",
-                [folio["folio_id"]],
-            )
-            conn.commit()
+        # Void folio
+        cur.execute(
+            "UPDATE folios SET status = 'VOID', updated_at = now() WHERE folio_id = %s",
+            [folio["folio_id"]],
+        )
+        # Void all charges
+        cur.execute(
+            "UPDATE charges SET status = 'VOIDED', voided_at = now() "
+            "WHERE folio_id = %s AND status = 'ACTIVE'",
+            [folio["folio_id"]],
+        )
+        conn.commit()
 
     logger.info("Voided folio", folio_id=str(folio["folio_id"]), reservation_id=reservation_id)
 
@@ -193,7 +192,7 @@ def _start_checkout_billing(detail):
             }),
         )
         logger.info("Started checkout billing workflow", reservation_id=reservation_id)
-    except Exception as e:
+    except Exception:
         # Re-raised to the caller, which logs/handles it; log at warning here to
         # avoid double-counting this as a separate error.
         logger.warning("Failed to start billing workflow", reservation_id=reservation_id)
@@ -211,69 +210,68 @@ def _update_folio_on_modification(detail):
         logger.error("Missing reservationId in modified event")
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Find existing folio
+    with get_conn() as conn, conn.cursor() as cur:
+        # Find existing folio
+        cur.execute(
+            "SELECT folio_id, status, check_in_date, check_out_date "
+            "FROM folios WHERE reservation_id = %s",
+            [reservation_id],
+        )
+        folio = cur.fetchone()
+        if not folio:
+            logger.info("No folio to update for modification", reservation_id=reservation_id)
+            return
+
+        if folio["status"] != "OPEN":
+            logger.info("Folio not OPEN, cannot modify", status=folio["status"])
+            return
+
+        folio_id = folio["folio_id"]
+
+        # Check if dates actually changed
+        old_check_in = str(folio["check_in_date"])
+        old_check_out = str(folio["check_out_date"])
+
+        if new_check_in == old_check_in and new_check_out == old_check_out:
+            logger.info("Dates unchanged, skipping folio update")
+            return
+
+        # Void existing ROOM_RATE charges
+        cur.execute(
+            "UPDATE charges SET status = 'VOIDED', voided_at = now(), "
+            "voided_by = 'system:reservation_modified' "
+            "WHERE folio_id = %s AND charge_type = 'ROOM_RATE' AND status = 'ACTIVE'",
+            [folio_id],
+        )
+
+        # Update folio dates
+        cur.execute(
+            "UPDATE folios SET check_in_date = %s, check_out_date = %s, updated_at = now() "
+            "WHERE folio_id = %s",
+            [new_check_in, new_check_out, folio_id],
+        )
+
+        # Recalculate room charges for new dates
+        check_in = datetime.strptime(new_check_in, "%Y-%m-%d").date()
+        check_out = datetime.strptime(new_check_out, "%Y-%m-%d").date()
+        nights = (check_out - check_in).days
+        if nights <= 0:
+            nights = 1
+
+        nightly_rate = round(float(total_amount) / nights, 2) if total_amount else 0
+
+        for night in range(nights):
+            charge_date = check_in + timedelta(days=night)
+            charge_id = str(uuid.uuid4())
             cur.execute(
-                "SELECT folio_id, status, check_in_date, check_out_date "
-                "FROM folios WHERE reservation_id = %s",
-                [reservation_id],
-            )
-            folio = cur.fetchone()
-            if not folio:
-                logger.info("No folio to update for modification", reservation_id=reservation_id)
-                return
-
-            if folio["status"] != "OPEN":
-                logger.info("Folio not OPEN, cannot modify", status=folio["status"])
-                return
-
-            folio_id = folio["folio_id"]
-
-            # Check if dates actually changed
-            old_check_in = str(folio["check_in_date"])
-            old_check_out = str(folio["check_out_date"])
-
-            if new_check_in == old_check_in and new_check_out == old_check_out:
-                logger.info("Dates unchanged, skipping folio update")
-                return
-
-            # Void existing ROOM_RATE charges
-            cur.execute(
-                "UPDATE charges SET status = 'VOIDED', voided_at = now(), "
-                "voided_by = 'system:reservation_modified' "
-                "WHERE folio_id = %s AND charge_type = 'ROOM_RATE' AND status = 'ACTIVE'",
-                [folio_id],
+                "INSERT INTO charges "
+                "(charge_id, folio_id, charge_type, description, amount, charge_date) "
+                "VALUES (%s, %s, 'ROOM_RATE', %s, %s, %s)",
+                [charge_id, folio_id, f"Room charge - Night {night + 1}",
+                 nightly_rate, str(charge_date)],
             )
 
-            # Update folio dates
-            cur.execute(
-                "UPDATE folios SET check_in_date = %s, check_out_date = %s, updated_at = now() "
-                "WHERE folio_id = %s",
-                [new_check_in, new_check_out, folio_id],
-            )
-
-            # Recalculate room charges for new dates
-            check_in = datetime.strptime(new_check_in, "%Y-%m-%d").date()
-            check_out = datetime.strptime(new_check_out, "%Y-%m-%d").date()
-            nights = (check_out - check_in).days
-            if nights <= 0:
-                nights = 1
-
-            nightly_rate = round(float(total_amount) / nights, 2) if total_amount else 0
-
-            for night in range(nights):
-                charge_date = check_in + timedelta(days=night)
-                charge_id = str(uuid.uuid4())
-                cur.execute(
-                    "INSERT INTO charges "
-                    "(charge_id, folio_id, charge_type, description, amount, charge_date) "
-                    "VALUES (%s, %s, 'ROOM_RATE', %s, %s, %s)",
-                    [charge_id, folio_id, f"Room charge - Night {night + 1}",
-                     nightly_rate, str(charge_date)],
-                )
-
-            conn.commit()
+        conn.commit()
 
     logger.info("Updated folio for reservation modification",
                reservation_id=reservation_id, old_dates=f"{old_check_in}/{old_check_out}",

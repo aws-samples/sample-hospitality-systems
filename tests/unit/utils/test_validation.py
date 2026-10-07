@@ -6,10 +6,10 @@ from datetime import date, timedelta
 from utils.validation import (
     parse_body,
     require_fields,
-    validate_uuid,
     validate_date,
     validate_date_range,
     validate_pagination,
+    validate_uuid,
 )
 
 VALID_UUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
@@ -65,7 +65,7 @@ class TestValidateUuid:
     def test_raising_style_raises_on_invalid(self):
         try:
             validate_uuid("nope", "propertyId")
-            assert False, "expected ValueError"
+            raise AssertionError("expected ValueError")
         except ValueError as e:
             assert "propertyId" in str(e)
 

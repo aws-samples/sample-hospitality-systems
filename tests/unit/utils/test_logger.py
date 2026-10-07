@@ -9,8 +9,8 @@ nested dicts/lists.
 import io
 import json
 
-from utils.logger import RedactingFormatter, SENSITIVE_KEYS, _redact, get_logger
 from aws_lambda_powertools import Logger
+from utils.logger import SENSITIVE_KEYS, RedactingFormatter, _redact, get_logger
 
 
 def _emit(logger, buf):

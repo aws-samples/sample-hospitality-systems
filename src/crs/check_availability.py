@@ -7,14 +7,14 @@ then filters by occupancy requirements. Joins with active PUBLIC rate plans
 to return nightly rates.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, server_error, transform_keys
-from utils.validation import validate_uuid, validate_date, validate_date_range
+from utils.logger import get_logger
+from utils.response import bad_request, ok, server_error
+from utils.validation import validate_date, validate_date_range, validate_uuid
 
 logger = get_logger("crs")
 
@@ -177,6 +177,6 @@ def handler(event, context):
             "available_room_types": results,
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error checking availability")
         return server_error("Failed to check availability.")

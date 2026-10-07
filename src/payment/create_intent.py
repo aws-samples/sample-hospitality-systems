@@ -6,17 +6,16 @@ pre-authorization flow. Records the authorization in the database
 and returns the client_secret for client-side confirmation.
 """
 
-from utils.logger import get_logger
 import os
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 
-from utils.database import get_conn
-from utils.response import created, bad_request, not_found, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import bad_request, created, not_found, server_error
+from utils.stripe_client import create_customer, create_payment_intent
 from utils.validation import parse_body, require_fields, validate_uuid
-from utils.stripe_client import create_payment_intent, create_customer
 
 logger = get_logger("payment")
 
@@ -110,7 +109,7 @@ def handler(event, context):
 
             # Insert authorization record only if we have a reservation
             auth_id = str(uuid.uuid4())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             if reservation_id:
                 with conn.cursor() as cur:
@@ -144,6 +143,6 @@ def handler(event, context):
             "status": "REQUIRES_CONFIRMATION",
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error creating payment intent")
         return server_error("Failed to create payment intent.")

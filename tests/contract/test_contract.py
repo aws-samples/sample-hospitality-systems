@@ -19,7 +19,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from engine import ContractContext, normalize_response, get_key_path  # noqa: E402
+from engine import ContractContext, get_key_path, normalize_response  # noqa: E402
 from matrix import MATRIX  # noqa: E402
 
 BASELINE_PATH = os.path.join(os.path.dirname(__file__), "baseline", "contract.json")

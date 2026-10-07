@@ -20,8 +20,8 @@ teardown; tests/sweeper.py is the backstop for orphans.
 import json
 import os
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 import boto3
 import pytest
@@ -87,7 +87,7 @@ def db(aws, stack_outputs):
             rows = []
             for record in resp.get("records", []):
                 row = {}
-                for col, field in zip(cols, record):
+                for col, field in zip(cols, record, strict=True):
                     row[col] = next(
                         (v for k, v in field.items() if k != "isNull"), None
                     ) if not field.get("isNull") else None

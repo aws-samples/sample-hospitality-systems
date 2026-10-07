@@ -5,11 +5,11 @@ PUT /housekeeping/tasks/{taskId}/assign
 Assign a task to a specific housekeeper.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.validation import validate_uuid, parse_body
-from utils.tenant import require_groups, verify_property_access, ForbiddenError
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups, verify_property_access
+from utils.validation import parse_body, validate_uuid
 
 logger = get_logger("pms-housekeeping")
 
@@ -31,31 +31,30 @@ def handler(event, context):
         if len(assigned_to) > 100:
             return error(400, "VALIDATION_ERROR", "assignedTo must be 100 characters or less")
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT task_id, property_id, status, assigned_to "
-                    "FROM housekeeping_tasks WHERE task_id = %s",
-                    [task_id],
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT task_id, property_id, status, assigned_to "
+                "FROM housekeeping_tasks WHERE task_id = %s",
+                [task_id],
+            )
+            task = cur.fetchone()
+            if not task:
+                return error(404, "NOT_FOUND", "Task not found")
+
+            verify_property_access(event, str(task["property_id"]))
+
+            if task["status"] not in ("PENDING", "ASSIGNED"):
+                return error(
+                    409, "INVALID_STATE",
+                    f"Can only assign PENDING or ASSIGNED tasks, current: {task['status']}"
                 )
-                task = cur.fetchone()
-                if not task:
-                    return error(404, "NOT_FOUND", "Task not found")
 
-                verify_property_access(event, str(task["property_id"]))
-
-                if task["status"] not in ("PENDING", "ASSIGNED"):
-                    return error(
-                        409, "INVALID_STATE",
-                        f"Can only assign PENDING or ASSIGNED tasks, current: {task['status']}"
-                    )
-
-                cur.execute(
-                    "UPDATE housekeeping_tasks SET assigned_to = %s, status = 'ASSIGNED', "
-                    "updated_at = now() WHERE task_id = %s",
-                    [assigned_to, task_id],
-                )
-                conn.commit()
+            cur.execute(
+                "UPDATE housekeeping_tasks SET assigned_to = %s, status = 'ASSIGNED', "
+                "updated_at = now() WHERE task_id = %s",
+                [assigned_to, task_id],
+            )
+            conn.commit()
 
         return ok({
             "taskId": task_id,
@@ -67,6 +66,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error assigning task")
         return server_error()

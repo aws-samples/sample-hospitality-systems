@@ -11,10 +11,10 @@ Scoping:
   across all active properties.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
-from utils.tenant import require_groups, get_property_id, ForbiddenError
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, get_property_id, require_groups
 
 logger = get_logger("pms-housekeeping")
 
@@ -31,41 +31,40 @@ def handler(event, context):
             params = event.get("queryStringParameters") or {}
             property_id = params.get("propertyId")
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                if property_id:
-                    cur.execute(
-                        "SELECT status, COUNT(*) AS count "
-                        "FROM rooms WHERE property_id = %s "
-                        "GROUP BY status",
-                        [property_id],
-                    )
-                else:
-                    # Aggregate across all active properties for chain-level users.
-                    cur.execute(
-                        "SELECT r.status, COUNT(*) AS count "
-                        "FROM rooms r "
-                        "JOIN properties p ON p.property_id = r.property_id "
-                        "WHERE p.is_active = TRUE "
-                        "GROUP BY r.status"
-                    )
-                status_counts = {row["status"]: row["count"] for row in cur.fetchall()}
+        with get_conn() as conn, conn.cursor() as cur:
+            if property_id:
+                cur.execute(
+                    "SELECT status, COUNT(*) AS count "
+                    "FROM rooms WHERE property_id = %s "
+                    "GROUP BY status",
+                    [property_id],
+                )
+            else:
+                # Aggregate across all active properties for chain-level users.
+                cur.execute(
+                    "SELECT r.status, COUNT(*) AS count "
+                    "FROM rooms r "
+                    "JOIN properties p ON p.property_id = r.property_id "
+                    "WHERE p.is_active = TRUE "
+                    "GROUP BY r.status"
+                )
+            status_counts = {row["status"]: row["count"] for row in cur.fetchall()}
 
-                total = sum(status_counts.values())
+            total = sum(status_counts.values())
 
-                # Rooms by floor (for visual board). Limited to a single property
-                # because the floor plan view only makes sense per-property.
-                rooms = []
-                if property_id:
-                    cur.execute(
-                        "SELECT r.room_id, r.room_number, r.floor, rt.name AS room_type, r.status "
-                        "FROM rooms r "
-                        "LEFT JOIN room_types rt ON r.room_type_id = rt.room_type_id "
-                        "WHERE r.property_id = %s "
-                        "ORDER BY r.floor DESC, r.room_number ASC",
-                        [property_id],
-                    )
-                    rooms = cur.fetchall()
+            # Rooms by floor (for visual board). Limited to a single property
+            # because the floor plan view only makes sense per-property.
+            rooms = []
+            if property_id:
+                cur.execute(
+                    "SELECT r.room_id, r.room_number, r.floor, rt.name AS room_type, r.status "
+                    "FROM rooms r "
+                    "LEFT JOIN room_types rt ON r.room_type_id = rt.room_type_id "
+                    "WHERE r.property_id = %s "
+                    "ORDER BY r.floor DESC, r.room_number ASC",
+                    [property_id],
+                )
+                rooms = cur.fetchall()
 
         occupied = status_counts.get("OCCUPIED", 0)
         occupancy_pct = round((occupied / total * 100), 1) if total > 0 else 0
@@ -97,6 +96,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting room status summary")
         return server_error()

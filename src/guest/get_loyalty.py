@@ -5,10 +5,10 @@ Returns basic loyalty info (tier, points balance, total stays) for the
 authenticated guest's account page.
 """
 
-from utils.logger import get_logger
-from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
 from utils.auth import get_claims
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
 
 logger = get_logger("guest")
 
@@ -24,15 +24,14 @@ def handler(event, context):
         if not guest_id:
             return error(400, "VALIDATION_ERROR", "guestId is required")
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Load the guest, including cognito_sub so we can verify ownership.
-                cur.execute(
-                    "SELECT guest_id, cognito_sub, loyalty_tier, points_balance, total_stays "
-                    "FROM guests WHERE guest_id = %s",
-                    [guest_id],
-                )
-                guest = cur.fetchone()
+        with get_conn() as conn, conn.cursor() as cur:
+            # Load the guest, including cognito_sub so we can verify ownership.
+            cur.execute(
+                "SELECT guest_id, cognito_sub, loyalty_tier, points_balance, total_stays "
+                "FROM guests WHERE guest_id = %s",
+                [guest_id],
+            )
+            guest = cur.fetchone()
 
         if not guest:
             return error(404, "NOT_FOUND", "Guest not found")
@@ -48,6 +47,6 @@ def handler(event, context):
             "totalStays": guest["total_stays"],
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting guest loyalty")
         return server_error()

@@ -1,15 +1,16 @@
 """Unit tests for tenant isolation utilities."""
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 from utils.tenant import (
+    ForbiddenError,
+    get_accessible_properties,
     get_property_id,
     get_region,
     has_group,
     require_groups,
     verify_property_access,
-    get_accessible_properties,
-    ForbiddenError,
 )
 
 

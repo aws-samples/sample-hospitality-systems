@@ -40,7 +40,7 @@ import urllib.request
 import uuid
 from contextlib import contextmanager
 from datetime import date, timedelta
-from typing import Any, Optional
+from typing import Any
 
 import boto3
 from utils.logger import get_logger
@@ -91,17 +91,17 @@ HOUSEKEEPER_NAMES = [
 _COGNITO_CLIENT = None
 _SECRETS_CLIENT = None
 
-_TOKEN: Optional[str] = None
+_TOKEN: str | None = None
 _TOKEN_EXPIRES_AT: float = 0.0
-_CREDS: Optional[dict] = None
+_CREDS: dict | None = None
 
-_GUEST_POOL: Optional[list[tuple[str, str]]] = None
+_GUEST_POOL: list[tuple[str, str]] | None = None
 
 # Tier weights for booking-frequency bias. DIAMOND members book ~4× more often
 # than NONE; gives the activity feed a realistic loyalty mix without changing
 # the underlying tier distribution in the seed.
 TIER_WEIGHTS = {"DIAMOND": 4, "GOLD": 3, "SILVER": 2, "NONE": 1}
-_PROPERTIES: Optional[list[dict]] = None
+_PROPERTIES: list[dict] | None = None
 
 
 def _cognito():
@@ -182,7 +182,7 @@ def _get_token(force_refresh: bool = False) -> str:
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _api_call(method: str, url: str, body: Optional[dict] = None, auth: bool = True) -> dict:
+def _api_call(method: str, url: str, body: dict | None = None, auth: bool = True) -> dict:
     """
     Make an authenticated API call. Single source of truth for all outbound HTTP.
 
@@ -191,7 +191,7 @@ def _api_call(method: str, url: str, body: Optional[dict] = None, auth: bool = T
     Reactive 401-refresh: one retry with a fresh token; if that 401s, raise.
     """
 
-    def _do_request(token: Optional[str]) -> tuple[int, bytes]:
+    def _do_request(token: str | None) -> tuple[int, bytes]:
         headers = {
             "Content-Type": "application/json",
             "X-Correlation-Id": str(uuid.uuid4()),
@@ -256,7 +256,8 @@ def _load_guest_pool() -> list[tuple[str, str]]:
     if _GUEST_POOL is not None:
         return _GUEST_POOL
 
-    from utils.database import get_conn  # noqa: imported lazily to keep cold-start fast
+    # Imported lazily to keep cold-start fast.
+    from utils.database import get_conn
 
     started_at = time.time()
     conn = get_conn()
@@ -545,7 +546,7 @@ def _is_no_room_available(result: dict) -> bool:
     return (data.get("error") or {}).get("code") == "NO_ROOM_AVAILABLE"
 
 
-def _find_available_room_id(property_id: Optional[str]) -> Optional[str]:
+def _find_available_room_id(property_id: str | None) -> str | None:
     """Return the roomId of any AVAILABLE room at the property, or None.
 
     Uses the room-status board endpoint, which lists per-room status for a single

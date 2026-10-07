@@ -30,7 +30,6 @@ from io import BytesIO
 import boto3
 from faker import Faker
 
-
 LAMBDA_CODE = '''
 import json
 import os

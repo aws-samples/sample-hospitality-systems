@@ -23,17 +23,13 @@ a password stored in Secrets Manager.
 """
 
 import argparse
-import base64
 import json
-import os
 import sys
-import time
 import uuid
 import zipfile
 from io import BytesIO
 
 import boto3
-
 
 LAMBDA_CODE = '''
 import json
@@ -137,14 +133,13 @@ def main():
     args = parser.parse_args()
 
     # Read SQL
-    with open(args.sql_file, "r", encoding="utf-8") as f:
+    with open(args.sql_file, encoding="utf-8") as f:
         sql = f.read()
 
     # Set up AWS clients
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     cf = session.client("cloudformation")
     lambda_client = session.client("lambda")
-    iam = session.client("iam")
 
     print(f"\n{'='*60}")
     print(f"Running migration: {args.sql_file}")
@@ -162,10 +157,6 @@ def main():
     vpc_stack_name = get_nested_stack_name(cf, args.stack, "VPCStack")
     private_subnet_ids = get_stack_output(cf, vpc_stack_name, "PrivateSubnetIds").split(",")
     security_group_id = get_stack_output(cf, vpc_stack_name, "LambdaSecurityGroupId")
-
-    # Get DB secret ARN from DatabaseStack
-    db_stack_name = get_nested_stack_name(cf, args.stack, "DatabaseStack")
-    secret_arn = get_stack_output(cf, db_stack_name, "DBSecretArn")
 
     # Get CommonLayer ARN — SAM hashes the logical ID, find by resource type
     layers = cf.list_stack_resources(StackName=args.stack)["StackResourceSummaries"]

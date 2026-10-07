@@ -5,10 +5,10 @@ All enums inherit from (str, Enum) so they serialize cleanly to JSON
 and can be compared directly with string values.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ReservationStatus(str, Enum):
+class ReservationStatus(StrEnum):
     """Status of a hotel reservation throughout its lifecycle."""
     CONFIRMED = "CONFIRMED"
     CHECKED_IN = "CHECKED_IN"
@@ -17,7 +17,7 @@ class ReservationStatus(str, Enum):
     NO_SHOW = "NO_SHOW"
 
 
-class RoomStatus(str, Enum):
+class RoomStatus(StrEnum):
     """Housekeeping / operational status of a physical room."""
     CLEAN = "CLEAN"
     DIRTY = "DIRTY"
@@ -26,7 +26,7 @@ class RoomStatus(str, Enum):
     OUT_OF_INVENTORY = "OUT_OF_INVENTORY"
 
 
-class PaymentStatus(str, Enum):
+class PaymentStatus(StrEnum):
     """Status of a Stripe PaymentIntent through the capture lifecycle."""
     AUTHORIZED = "AUTHORIZED"
     CAPTURED = "CAPTURED"
@@ -34,27 +34,27 @@ class PaymentStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
-class RefundStatus(str, Enum):
+class RefundStatus(StrEnum):
     """Status of a Stripe refund."""
     PENDING = "PENDING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
 
 
-class DiscountType(str, Enum):
+class DiscountType(StrEnum):
     """Type of discount applied to a rate or charge."""
     PERCENTAGE = "PERCENTAGE"
     FIXED_AMOUNT = "FIXED_AMOUNT"
 
 
-class CartStatus(str, Enum):
+class CartStatus(StrEnum):
     """Status of a booking cart in the Booking Engine."""
     ACTIVE = "ACTIVE"
     EXPIRED = "EXPIRED"
     CONVERTED = "CONVERTED"
 
 
-class ChannelMethod(str, Enum):
+class ChannelMethod(StrEnum):
     """Channel through which a reservation was made."""
     WEB = "WEB"
     MOBILE_APP = "MOBILE_APP"
@@ -64,7 +64,7 @@ class ChannelMethod(str, Enum):
     WALKIN = "WALKIN"
 
 
-class RatePlanType(str, Enum):
+class RatePlanType(StrEnum):
     """Type of rate plan offered."""
     PUBLIC = "PUBLIC"
     NEGOTIATED = "NEGOTIATED"
@@ -73,7 +73,7 @@ class RatePlanType(str, Enum):
     PROMOTIONAL = "PROMOTIONAL"
 
 
-class CancellationPolicy(str, Enum):
+class CancellationPolicy(StrEnum):
     """Cancellation policy tier for a rate plan."""
     FLEXIBLE = "FLEXIBLE"
     MODERATE = "MODERATE"
@@ -81,14 +81,14 @@ class CancellationPolicy(str, Enum):
     NON_REFUNDABLE = "NON_REFUNDABLE"
 
 
-class GuaranteeType(str, Enum):
+class GuaranteeType(StrEnum):
     """Method used to guarantee a reservation."""
     CREDIT_CARD = "CREDIT_CARD"
     DEPOSIT = "DEPOSIT"
     CORPORATE = "CORPORATE"
 
 
-class TripType(str, Enum):
+class TripType(StrEnum):
     """Purpose of the guest's trip."""
     LEISURE = "LEISURE"
     BUSINESS = "BUSINESS"
@@ -101,21 +101,21 @@ class TripType(str, Enum):
 # ==============================================================================
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     """Type of housekeeping task."""
     CHECKOUT = "CHECKOUT"
     PRE_ARRIVAL = "PRE_ARRIVAL"
     MAINTENANCE = "MAINTENANCE"
 
 
-class TaskPriority(str, Enum):
+class TaskPriority(StrEnum):
     """Priority level for housekeeping tasks."""
     HIGH = "HIGH"
     NORMAL = "NORMAL"
     LOW = "LOW"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Status of a housekeeping task through its lifecycle."""
     PENDING = "PENDING"
     ASSIGNED = "ASSIGNED"
@@ -126,7 +126,7 @@ class TaskStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class FolioStatus(str, Enum):
+class FolioStatus(StrEnum):
     """Status of a billing folio through its lifecycle."""
     OPEN = "OPEN"
     PENDING_PAYMENT = "PENDING_PAYMENT"
@@ -135,7 +135,7 @@ class FolioStatus(str, Enum):
     PAYMENT_FAILED = "PAYMENT_FAILED"
 
 
-class ChargeType(str, Enum):
+class ChargeType(StrEnum):
     """Type of charge posted to a folio."""
     ROOM_RATE = "ROOM_RATE"
     TAX = "TAX"
@@ -143,7 +143,7 @@ class ChargeType(str, Enum):
     ADJUSTMENT = "ADJUSTMENT"
 
 
-class LoyaltyTier(str, Enum):
+class LoyaltyTier(StrEnum):
     """Guest loyalty tier levels."""
     NONE = "NONE"
     SILVER = "SILVER"
@@ -151,20 +151,20 @@ class LoyaltyTier(str, Enum):
     DIAMOND = "DIAMOND"
 
 
-class LoyaltyTransactionType(str, Enum):
+class LoyaltyTransactionType(StrEnum):
     """Type of loyalty point transaction."""
     EARN_STAY = "EARN_STAY"
     REDEEM_NIGHT = "REDEEM_NIGHT"
     ADJUSTMENT = "ADJUSTMENT"
 
 
-class RecordType(str, Enum):
+class RecordType(StrEnum):
     """Type of check-in/out record."""
     CHECKIN = "CHECKIN"
     CHECKOUT = "CHECKOUT"
 
 
-class PmsRoomStatus(str, Enum):
+class PmsRoomStatus(StrEnum):
     """Extended room status for PMS operations (superset of CRS RoomStatus)."""
     AVAILABLE = "AVAILABLE"
     OCCUPIED = "OCCUPIED"
@@ -174,7 +174,7 @@ class PmsRoomStatus(str, Enum):
     OUT_OF_ORDER = "OUT_OF_ORDER"
 
 
-class StaffRole(str, Enum):
+class StaffRole(StrEnum):
     """Cognito group names for staff roles."""
     ADMIN = "Admin"
     MANAGER = "Manager"

@@ -9,7 +9,6 @@ commit/rollback behavior.
 from unittest.mock import MagicMock
 
 import pytest
-
 import utils.database as database
 
 

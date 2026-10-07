@@ -14,3 +14,6 @@ hypothesis>=6.100,<7.0
 # Validates the API Gateway request-model JSON Schemas (src/api_schemas/) are
 # themselves well-formed Draft 4 documents. Used by tests/unit/api_schemas/.
 jsonschema>=4.20,<5.0
+# Linter (config in pyproject.toml [tool.ruff]). Lint only — the formatter is
+# not used. Run via `make lint`.
+ruff>=0.6,<1.0

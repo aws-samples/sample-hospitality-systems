@@ -7,18 +7,17 @@ tenant isolation.
 """
 
 import pytest
-
 from utils.auth import (
     get_claims,
-    get_guest_id,
     get_email,
-    get_roles,
-    require_owner,
     get_groups,
+    get_guest_id,
+    get_region,
+    get_roles,
+    get_user_id,
     has_group,
     require_groups,
-    get_region,
-    get_user_id,
+    require_owner,
 )
 from utils.tenant import ForbiddenError
 

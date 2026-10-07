@@ -51,7 +51,7 @@ def main():
     sm = session.client("secretsmanager")
 
     print(f"\n{'=' * 60}")
-    print(f"Finalizing simulator user")
+    print("Finalizing simulator user")
     print(f"Stack: {args.stack}")
     print(f"{'=' * 60}\n")
 
@@ -69,7 +69,7 @@ def main():
 
     print(f"User pool: {user_pool_id}")
     print(f"User: {username}")
-    print(f"Setting permanent password...")
+    print("Setting permanent password...")
 
     cognito.admin_set_user_password(
         UserPoolId=user_pool_id,
@@ -82,7 +82,7 @@ def main():
     status = user["UserStatus"]
     print(f"\n{'=' * 60}")
     if status == "CONFIRMED":
-        print(f"✓ User is CONFIRMED and ready to authenticate.")
+        print("✓ User is CONFIRMED and ready to authenticate.")
     else:
         print(f"⚠ User status is '{status}' (expected CONFIRMED).")
     print(f"{'=' * 60}\n")

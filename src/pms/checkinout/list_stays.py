@@ -5,12 +5,11 @@ GET /stays?propertyId=&status=&date=&page=&limit=
 Lists check-in/out records and active stays for a property.
 """
 
-import os
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, get_property_id, require_groups
 from utils.validation import validate_uuid
-from utils.tenant import require_groups, verify_property_access, get_property_id, ForbiddenError
 
 logger = get_logger("pms-checkinout")
 
@@ -58,40 +57,39 @@ def handler(event, context):
             date_filter, date_filter,
         ]
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) as total "
-                    "FROM reservations r "
-                    "WHERE (%s::uuid IS NULL OR r.property_id = %s::uuid) "
-                    "AND (%s::text IS NULL AND r.status IN ('CONFIRMED','CHECKED_IN') "
-                    "     OR r.status = %s::text) "
-                    "AND (%s::date IS NULL OR r.check_in_date <= %s::date) "
-                    "AND (%s::date IS NULL OR r.check_out_date >= %s::date)",
-                    filter_params,
-                )
-                total = cur.fetchone()["total"]
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) as total "
+                "FROM reservations r "
+                "WHERE (%s::uuid IS NULL OR r.property_id = %s::uuid) "
+                "AND (%s::text IS NULL AND r.status IN ('CONFIRMED','CHECKED_IN') "
+                "     OR r.status = %s::text) "
+                "AND (%s::date IS NULL OR r.check_in_date <= %s::date) "
+                "AND (%s::date IS NULL OR r.check_out_date >= %s::date)",
+                filter_params,
+            )
+            total = cur.fetchone()["total"]
 
-                cur.execute(
-                    "SELECT r.reservation_id, r.property_id, r.guest_id, "
-                    "rt.name AS room_type, r.room_type_id, r.room_id, r.status, "
-                    "r.check_in_date, r.check_out_date, r.checked_in_at, r.checked_out_at, "
-                    "g.first_name, g.last_name, g.loyalty_tier, "
-                    "rm.room_number "
-                    "FROM reservations r "
-                    "LEFT JOIN guests g ON r.guest_id = g.guest_id "
-                    "LEFT JOIN rooms rm ON r.room_id = rm.room_id "
-                    "LEFT JOIN room_types rt ON r.room_type_id = rt.room_type_id "
-                    "WHERE (%s::uuid IS NULL OR r.property_id = %s::uuid) "
-                    "AND (%s::text IS NULL AND r.status IN ('CONFIRMED','CHECKED_IN') "
-                    "     OR r.status = %s::text) "
-                    "AND (%s::date IS NULL OR r.check_in_date <= %s::date) "
-                    "AND (%s::date IS NULL OR r.check_out_date >= %s::date) "
-                    "ORDER BY r.check_in_date ASC "
-                    "LIMIT %s OFFSET %s",
-                    filter_params + [limit, offset],
-                )
-                stays = cur.fetchall()
+            cur.execute(
+                "SELECT r.reservation_id, r.property_id, r.guest_id, "
+                "rt.name AS room_type, r.room_type_id, r.room_id, r.status, "
+                "r.check_in_date, r.check_out_date, r.checked_in_at, r.checked_out_at, "
+                "g.first_name, g.last_name, g.loyalty_tier, "
+                "rm.room_number "
+                "FROM reservations r "
+                "LEFT JOIN guests g ON r.guest_id = g.guest_id "
+                "LEFT JOIN rooms rm ON r.room_id = rm.room_id "
+                "LEFT JOIN room_types rt ON r.room_type_id = rt.room_type_id "
+                "WHERE (%s::uuid IS NULL OR r.property_id = %s::uuid) "
+                "AND (%s::text IS NULL AND r.status IN ('CONFIRMED','CHECKED_IN') "
+                "     OR r.status = %s::text) "
+                "AND (%s::date IS NULL OR r.check_in_date <= %s::date) "
+                "AND (%s::date IS NULL OR r.check_out_date >= %s::date) "
+                "ORDER BY r.check_in_date ASC "
+                "LIMIT %s OFFSET %s",
+                filter_params + [limit, offset],
+            )
+            stays = cur.fetchall()
 
         return ok({
             "stays": [_format_stay(s) for s in stays],
@@ -107,7 +105,7 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error listing stays")
         return server_error()
 

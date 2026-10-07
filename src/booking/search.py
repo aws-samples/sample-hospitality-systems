@@ -9,14 +9,19 @@ Results are sorted by featured status (descending) then by cheapest price
 (ascending), with pagination support.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from utils.database import get_conn
-from utils.response import ok, bad_request, server_error, transform_keys
-from utils.validation import parse_body, require_fields, validate_date, validate_date_range
+from utils.logger import get_logger
+from utils.response import bad_request, ok, server_error
+from utils.validation import (
+    parse_body,
+    require_fields,
+    validate_date,
+    validate_date_range,
+)
 
 logger = get_logger("booking")
 
@@ -393,6 +398,6 @@ def handler(event, context):
             },
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error searching properties")
         return server_error("Failed to search properties.")

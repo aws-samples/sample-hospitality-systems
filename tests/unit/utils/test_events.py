@@ -5,11 +5,10 @@ documented gotcha that publish_event takes no event_bus_name kwarg — it
 reads EVENT_BUS_NAME from the environment.
 """
 
-import json
 import inspect
+import json
 
 import pytest
-
 import utils.events as events
 
 

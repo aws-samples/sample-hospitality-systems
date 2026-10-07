@@ -25,17 +25,18 @@ Design notes:
 """
 
 from datetime import date, datetime, timedelta
-from utils.logger import get_logger
+
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
 from utils.tenant import (
-    require_groups,
-    get_property_id,
-    get_region,
-    get_groups_from_event,
     CHAIN_LEVEL_GROUPS,
     REGIONAL_GROUPS,
     ForbiddenError,
+    get_groups_from_event,
+    get_property_id,
+    get_region,
+    require_groups,
 )
 
 logger = get_logger("pms-reporting")
@@ -48,7 +49,7 @@ def _parse_date(value: str, field: str) -> date:
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except (TypeError, ValueError):
-        raise ValueError(f"{field} must be YYYY-MM-DD")
+        raise ValueError(f"{field} must be YYYY-MM-DD") from None
 
 
 @logger.inject_lambda_context
@@ -87,146 +88,145 @@ def handler(event, context):
             scope_property_ids = [requested_property_id]
         # else: chain or region wide. We will filter by region in SQL when needed.
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Resolve which property_ids are actually in scope. We always
-                # materialize the list so SQL params stay simple, even for
-                # chain-wide.
-                in_scope: list[str] = []
-                if scope_property_ids is not None:
-                    cur.execute(
-                        "SELECT property_id FROM properties "
-                        "WHERE property_id = ANY(%s) AND is_active = TRUE",
-                        [scope_property_ids],
-                    )
-                else:
-                    if caller_region or user_groups.intersection(REGIONAL_GROUPS):
-                        region = caller_region
-                        if region:
-                            cur.execute(
-                                "SELECT property_id FROM properties "
-                                "WHERE region = %s AND is_active = TRUE",
-                                [region],
-                            )
-                        else:
-                            cur.execute(
-                                "SELECT property_id FROM properties "
-                                "WHERE is_active = TRUE"
-                            )
-                    elif user_groups.intersection(CHAIN_LEVEL_GROUPS):
+        with get_conn() as conn, conn.cursor() as cur:
+            # Resolve which property_ids are actually in scope. We always
+            # materialize the list so SQL params stay simple, even for
+            # chain-wide.
+            in_scope: list[str] = []
+            if scope_property_ids is not None:
+                cur.execute(
+                    "SELECT property_id FROM properties "
+                    "WHERE property_id = ANY(%s) AND is_active = TRUE",
+                    [scope_property_ids],
+                )
+            else:
+                if caller_region or user_groups.intersection(REGIONAL_GROUPS):
+                    region = caller_region
+                    if region:
                         cur.execute(
-                            "SELECT property_id FROM properties WHERE is_active = TRUE"
+                            "SELECT property_id FROM properties "
+                            "WHERE region = %s AND is_active = TRUE",
+                            [region],
                         )
                     else:
-                        return forbidden("Access denied: no property access")
+                        cur.execute(
+                            "SELECT property_id FROM properties "
+                            "WHERE is_active = TRUE"
+                        )
+                elif user_groups.intersection(CHAIN_LEVEL_GROUPS):
+                    cur.execute(
+                        "SELECT property_id FROM properties WHERE is_active = TRUE"
+                    )
+                else:
+                    return forbidden("Access denied: no property access")
 
-                in_scope = [str(r["property_id"]) for r in cur.fetchall()]
+            in_scope = [str(r["property_id"]) for r in cur.fetchall()]
 
-                if not in_scope:
-                    return ok({
-                        "propertyId": requested_property_id or CHAIN_WIDE_SENTINEL,
-                        "startDate": str(start_date),
-                        "endDate": str(end_date),
-                        "totals": _empty_totals(),
-                        "dailyBreakdown": _zero_breakdown(start_date, end_date),
-                    })
+            if not in_scope:
+                return ok({
+                    "propertyId": requested_property_id or CHAIN_WIDE_SENTINEL,
+                    "startDate": str(start_date),
+                    "endDate": str(end_date),
+                    "totals": _empty_totals(),
+                    "dailyBreakdown": _zero_breakdown(start_date, end_date),
+                })
 
-                # Pre-build the contiguous date series so days with no activity
-                # show up as zeroes.
-                date_series = [
-                    start_date + timedelta(days=i) for i in range(span_days)
-                ]
-                breakdown = {
-                    d: {
-                        "date": str(d),
-                        "revenue": 0.0,
-                        "roomNightsSold": 0,
-                        "checkIns": 0,
-                        "checkOuts": 0,
-                        "reservationsCreated": 0,
-                        "reservationsCancelled": 0,
-                        "occupancyPercent": 0.0,
-                    }
-                    for d in date_series
+            # Pre-build the contiguous date series so days with no activity
+            # show up as zeroes.
+            date_series = [
+                start_date + timedelta(days=i) for i in range(span_days)
+            ]
+            breakdown = {
+                d: {
+                    "date": str(d),
+                    "revenue": 0.0,
+                    "roomNightsSold": 0,
+                    "checkIns": 0,
+                    "checkOuts": 0,
+                    "reservationsCreated": 0,
+                    "reservationsCancelled": 0,
+                    "occupancyPercent": 0.0,
                 }
+                for d in date_series
+            }
 
-                # Total active rooms in scope (for occupancy %). Snapshot is fine
-                # for ranges up to ~3 months.
-                cur.execute(
-                    "SELECT COUNT(*) AS total FROM rooms "
-                    "WHERE property_id = ANY(%s)",
-                    [in_scope],
-                )
-                total_rooms = int(cur.fetchone()["total"])
+            # Total active rooms in scope (for occupancy %). Snapshot is fine
+            # for ranges up to ~3 months.
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM rooms "
+                "WHERE property_id = ANY(%s)",
+                [in_scope],
+            )
+            total_rooms = int(cur.fetchone()["total"])
 
-                # Revenue + room nights — grouped by charge_date.
-                cur.execute(
-                    "SELECT c.charge_date AS day, "
-                    "  COALESCE(SUM(c.amount), 0) AS revenue, "
-                    "  COUNT(*) AS room_nights "
-                    "FROM charges c "
-                    "JOIN folios f ON f.folio_id = c.folio_id "
-                    "WHERE f.property_id = ANY(%s) "
-                    "  AND c.charge_date BETWEEN %s AND %s "
-                    "  AND c.status = 'ACTIVE' "
-                    "  AND c.charge_type = 'ROOM_RATE' "
-                    "GROUP BY c.charge_date",
-                    [in_scope, start_date, end_date],
-                )
-                for row in cur.fetchall():
-                    day = row["day"]
-                    if day in breakdown:
-                        breakdown[day]["revenue"] = float(row["revenue"])
-                        breakdown[day]["roomNightsSold"] = int(row["room_nights"])
+            # Revenue + room nights — grouped by charge_date.
+            cur.execute(
+                "SELECT c.charge_date AS day, "
+                "  COALESCE(SUM(c.amount), 0) AS revenue, "
+                "  COUNT(*) AS room_nights "
+                "FROM charges c "
+                "JOIN folios f ON f.folio_id = c.folio_id "
+                "WHERE f.property_id = ANY(%s) "
+                "  AND c.charge_date BETWEEN %s AND %s "
+                "  AND c.status = 'ACTIVE' "
+                "  AND c.charge_type = 'ROOM_RATE' "
+                "GROUP BY c.charge_date",
+                [in_scope, start_date, end_date],
+            )
+            for row in cur.fetchall():
+                day = row["day"]
+                if day in breakdown:
+                    breakdown[day]["revenue"] = float(row["revenue"])
+                    breakdown[day]["roomNightsSold"] = int(row["room_nights"])
 
-                # Reservations created.
-                cur.execute(
-                    "SELECT DATE(created_at) AS day, COUNT(*) AS count "
-                    "FROM reservations "
-                    "WHERE property_id = ANY(%s) "
-                    "  AND DATE(created_at) BETWEEN %s AND %s "
-                    "GROUP BY DATE(created_at)",
-                    [in_scope, start_date, end_date],
-                )
-                for row in cur.fetchall():
-                    day = row["day"]
-                    if day in breakdown:
-                        breakdown[day]["reservationsCreated"] = int(row["count"])
+            # Reservations created.
+            cur.execute(
+                "SELECT DATE(created_at) AS day, COUNT(*) AS count "
+                "FROM reservations "
+                "WHERE property_id = ANY(%s) "
+                "  AND DATE(created_at) BETWEEN %s AND %s "
+                "GROUP BY DATE(created_at)",
+                [in_scope, start_date, end_date],
+            )
+            for row in cur.fetchall():
+                day = row["day"]
+                if day in breakdown:
+                    breakdown[day]["reservationsCreated"] = int(row["count"])
 
-                # Reservations cancelled (only those that landed in CANCELLED
-                # state and have a cancelled_at timestamp).
-                cur.execute(
-                    "SELECT DATE(cancelled_at) AS day, COUNT(*) AS count "
-                    "FROM reservations "
-                    "WHERE property_id = ANY(%s) "
-                    "  AND status = 'CANCELLED' "
-                    "  AND cancelled_at IS NOT NULL "
-                    "  AND DATE(cancelled_at) BETWEEN %s AND %s "
-                    "GROUP BY DATE(cancelled_at)",
-                    [in_scope, start_date, end_date],
-                )
-                for row in cur.fetchall():
-                    day = row["day"]
-                    if day in breakdown:
-                        breakdown[day]["reservationsCancelled"] = int(row["count"])
+            # Reservations cancelled (only those that landed in CANCELLED
+            # state and have a cancelled_at timestamp).
+            cur.execute(
+                "SELECT DATE(cancelled_at) AS day, COUNT(*) AS count "
+                "FROM reservations "
+                "WHERE property_id = ANY(%s) "
+                "  AND status = 'CANCELLED' "
+                "  AND cancelled_at IS NOT NULL "
+                "  AND DATE(cancelled_at) BETWEEN %s AND %s "
+                "GROUP BY DATE(cancelled_at)",
+                [in_scope, start_date, end_date],
+            )
+            for row in cur.fetchall():
+                day = row["day"]
+                if day in breakdown:
+                    breakdown[day]["reservationsCancelled"] = int(row["count"])
 
-                # Check-ins / check-outs.
-                cur.execute(
-                    "SELECT DATE(recorded_at) AS day, record_type, COUNT(*) AS count "
-                    "FROM checkinout_records "
-                    "WHERE property_id = ANY(%s) "
-                    "  AND DATE(recorded_at) BETWEEN %s AND %s "
-                    "GROUP BY DATE(recorded_at), record_type",
-                    [in_scope, start_date, end_date],
-                )
-                for row in cur.fetchall():
-                    day = row["day"]
-                    if day not in breakdown:
-                        continue
-                    if row["record_type"] == "CHECKIN":
-                        breakdown[day]["checkIns"] = int(row["count"])
-                    elif row["record_type"] == "CHECKOUT":
-                        breakdown[day]["checkOuts"] = int(row["count"])
+            # Check-ins / check-outs.
+            cur.execute(
+                "SELECT DATE(recorded_at) AS day, record_type, COUNT(*) AS count "
+                "FROM checkinout_records "
+                "WHERE property_id = ANY(%s) "
+                "  AND DATE(recorded_at) BETWEEN %s AND %s "
+                "GROUP BY DATE(recorded_at), record_type",
+                [in_scope, start_date, end_date],
+            )
+            for row in cur.fetchall():
+                day = row["day"]
+                if day not in breakdown:
+                    continue
+                if row["record_type"] == "CHECKIN":
+                    breakdown[day]["checkIns"] = int(row["count"])
+                elif row["record_type"] == "CHECKOUT":
+                    breakdown[day]["checkOuts"] = int(row["count"])
 
         # Compute occupancy % per day and roll up totals.
         totals = _empty_totals()

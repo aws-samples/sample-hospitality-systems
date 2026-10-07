@@ -10,12 +10,12 @@ payment_intent.payment_failed, and charge.refunded events.
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from utils.database import get_conn
 from utils.logger import get_logger
-from utils.response import ok, bad_request, server_error
-from utils.stripe_client import get_stripe, verify_webhook_signature
+from utils.response import bad_request, ok, server_error
+from utils.stripe_client import verify_webhook_signature
 
 logger = get_logger("payment")
 
@@ -98,7 +98,7 @@ def handler(event, context):
 
         event_type = stripe_event.type
         data_object = stripe_event.data.object
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         logger.info("Processing Stripe webhook event", event_type=event_type)
 
@@ -123,7 +123,7 @@ def handler(event, context):
 
         return ok({"received": True, "event_type": event_type})
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error processing Stripe webhook")
         return server_error("Webhook processing failed.")
 

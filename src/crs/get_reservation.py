@@ -5,14 +5,14 @@ Retrieves a single reservation by ID. Requires authentication and
 verifies that the requesting guest owns the reservation.
 """
 
-from utils.logger import get_logger
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from utils.database import get_conn
-from utils.response import ok, not_found, bad_request, forbidden, server_error
 from utils.auth import get_guest_id
+from utils.database import get_conn
+from utils.logger import get_logger
+from utils.response import bad_request, forbidden, not_found, ok, server_error
 from utils.validation import validate_uuid
 
 logger = get_logger("crs")
@@ -98,6 +98,6 @@ def handler(event, context):
 
         return ok(_serialize_row(reservation))
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting reservation")
         return server_error("Failed to get reservation.")

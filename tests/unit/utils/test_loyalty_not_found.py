@@ -6,8 +6,7 @@ uncovered)."""
 from unittest.mock import MagicMock
 
 import pytest
-
-from utils.loyalty import earn_points, redeem_points, adjust_points, recalculate_tier
+from utils.loyalty import adjust_points, earn_points, recalculate_tier, redeem_points
 
 
 def _conn_returning(row):

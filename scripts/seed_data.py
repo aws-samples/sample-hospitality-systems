@@ -14,7 +14,7 @@ import argparse
 import os
 import random
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 try:
     import psycopg
@@ -291,7 +291,7 @@ def seed_database(conn):
     property_count = 0
     today = date.today()
 
-    for region_idx, (region_name, cities) in enumerate(REGIONS.items()):
+    for region_idx, (_region_name, cities) in enumerate(REGIONS.items()):
         for city_idx, (city, state, tz, lat, lng) in enumerate(cities):
             property_id = str(uuid.uuid4())
             star_rating = random.choice([3, 4, 4, 4, 5])
@@ -353,7 +353,7 @@ def seed_database(conn):
                 "FLEXIBLE", True,
             ))
 
-            for rt_idx, (template, room_count) in enumerate(zip(room_templates, room_counts)):
+            for rt_idx, (template, room_count) in enumerate(zip(room_templates, room_counts, strict=True)):
                 room_type_id = str(uuid.uuid4())
 
                 # Scale base rate by star rating

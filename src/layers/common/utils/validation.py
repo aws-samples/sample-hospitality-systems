@@ -6,15 +6,13 @@ UUID formats, date formats, date ranges, and pagination parameters.
 """
 
 import json
-import re
 import uuid as uuid_module
 from datetime import date, datetime
-from typing import Any, Optional
 
 from utils.response import bad_request
 
 
-def parse_body(event: dict) -> Optional[dict]:
+def parse_body(event: dict) -> dict | None:
     """
     Parse the JSON body from an API Gateway Lambda proxy event.
 
@@ -38,7 +36,7 @@ def parse_body(event: dict) -> Optional[dict]:
         return None
 
 
-def require_fields(data: Optional[dict], fields: list[str]) -> Optional[dict]:
+def require_fields(data: dict | None, fields: list[str]) -> dict | None:
     """
     Validate that all required fields are present and non-None in the data.
 
@@ -60,7 +58,7 @@ def require_fields(data: Optional[dict], fields: list[str]) -> Optional[dict]:
     return None
 
 
-def validate_uuid(value: str, field_name: Optional[str] = None):
+def validate_uuid(value: str, field_name: str | None = None):
     """
     Validate that a string is a properly formatted UUID (v4).
 
@@ -93,7 +91,7 @@ def validate_uuid(value: str, field_name: Optional[str] = None):
     return valid
 
 
-def validate_date(value: str) -> Optional[date]:
+def validate_date(value: str) -> date | None:
     """
     Validate and parse a YYYY-MM-DD date string.
 
@@ -109,7 +107,7 @@ def validate_date(value: str) -> Optional[date]:
         return None
 
 
-def validate_date_range(check_in: str, check_out: str) -> Optional[dict]:
+def validate_date_range(check_in: str, check_out: str) -> dict | None:
     """
     Validate a check-in / check-out date range.
 

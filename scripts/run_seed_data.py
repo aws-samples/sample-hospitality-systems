@@ -25,7 +25,6 @@ from pathlib import Path
 
 import boto3
 
-
 HANDLER_CODE = '''
 import json
 import os

@@ -17,7 +17,6 @@ from io import BytesIO
 
 import boto3
 
-
 LAMBDA_CODE = '''
 import json
 import os

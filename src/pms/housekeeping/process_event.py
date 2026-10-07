@@ -8,8 +8,9 @@ Handles: checkinout.checked_out, reservation.confirmed, reservation.cancelled
 import json
 import os
 import uuid
-from utils.logger import get_logger
+
 from utils.database import get_conn
+from utils.logger import get_logger
 
 logger = get_logger("pms-housekeeping")
 
@@ -53,7 +54,7 @@ def handler(event, context):
             else:
                 logger.info("Ignoring unhandled event type", detail_type=detail_type)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to process housekeeping event",
                            message_id=record.get("messageId"))
             failures.append({"itemIdentifier": record["messageId"]})
@@ -72,28 +73,27 @@ def _create_checkout_task(detail):
         logger.error("Missing required fields in checkout event", detail=detail)
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Idempotency check
-            cur.execute(
-                "SELECT task_id FROM housekeeping_tasks "
-                "WHERE reservation_id = %s AND task_type = 'CHECKOUT'",
-                [reservation_id],
-            )
-            if cur.fetchone():
-                logger.info("Checkout task already exists, skipping",
-                           reservation_id=reservation_id)
-                return
+    with get_conn() as conn, conn.cursor() as cur:
+        # Idempotency check
+        cur.execute(
+            "SELECT task_id FROM housekeeping_tasks "
+            "WHERE reservation_id = %s AND task_type = 'CHECKOUT'",
+            [reservation_id],
+        )
+        if cur.fetchone():
+            logger.info("Checkout task already exists, skipping",
+                       reservation_id=reservation_id)
+            return
 
-            task_id = str(uuid.uuid4())
-            cur.execute(
-                "INSERT INTO housekeeping_tasks "
-                "(task_id, property_id, room_id, room_number, task_type, priority, "
-                "status, reservation_id) "
-                "VALUES (%s, %s, %s, %s, 'CHECKOUT', 'HIGH', 'PENDING', %s)",
-                [task_id, property_id, room_id, room_number, reservation_id],
-            )
-            conn.commit()
+        task_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO housekeeping_tasks "
+            "(task_id, property_id, room_id, room_number, task_type, priority, "
+            "status, reservation_id) "
+            "VALUES (%s, %s, %s, %s, 'CHECKOUT', 'HIGH', 'PENDING', %s)",
+            [task_id, property_id, room_id, room_number, reservation_id],
+        )
+        conn.commit()
 
     # Start Step Functions workflow
     _start_housekeeping_dispatch(task_id, property_id, room_id, room_number)
@@ -117,28 +117,27 @@ def _create_pre_arrival_task(detail):
                    reservation_id=reservation_id)
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Idempotency check
-            cur.execute(
-                "SELECT task_id FROM housekeeping_tasks "
-                "WHERE reservation_id = %s AND task_type = 'PRE_ARRIVAL'",
-                [reservation_id],
-            )
-            if cur.fetchone():
-                logger.info("Pre-arrival task already exists, skipping",
-                           reservation_id=reservation_id)
-                return
+    with get_conn() as conn, conn.cursor() as cur:
+        # Idempotency check
+        cur.execute(
+            "SELECT task_id FROM housekeeping_tasks "
+            "WHERE reservation_id = %s AND task_type = 'PRE_ARRIVAL'",
+            [reservation_id],
+        )
+        if cur.fetchone():
+            logger.info("Pre-arrival task already exists, skipping",
+                       reservation_id=reservation_id)
+            return
 
-            task_id = str(uuid.uuid4())
-            cur.execute(
-                "INSERT INTO housekeeping_tasks "
-                "(task_id, property_id, room_id, room_number, task_type, priority, "
-                "status, reservation_id) "
-                "VALUES (%s, %s, %s, %s, 'PRE_ARRIVAL', 'NORMAL', 'PENDING', %s)",
-                [task_id, property_id, room_id, room_number, reservation_id],
-            )
-            conn.commit()
+        task_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO housekeeping_tasks "
+            "(task_id, property_id, room_id, room_number, task_type, priority, "
+            "status, reservation_id) "
+            "VALUES (%s, %s, %s, %s, 'PRE_ARRIVAL', 'NORMAL', 'PENDING', %s)",
+            [task_id, property_id, room_id, room_number, reservation_id],
+        )
+        conn.commit()
 
     _start_housekeeping_dispatch(task_id, property_id, room_id, room_number)
     logger.info("Created pre-arrival housekeeping task", task_id=task_id)
@@ -150,15 +149,14 @@ def _cancel_pending_tasks(detail):
     if not reservation_id:
         return
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE housekeeping_tasks SET status = 'FAILED', "
-                "notes = 'Cancelled: reservation cancelled', updated_at = now() "
-                "WHERE reservation_id = %s AND status IN ('PENDING', 'ASSIGNED')",
-                [reservation_id],
-            )
-            conn.commit()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE housekeeping_tasks SET status = 'FAILED', "
+            "notes = 'Cancelled: reservation cancelled', updated_at = now() "
+            "WHERE reservation_id = %s AND status IN ('PENDING', 'ASSIGNED')",
+            [reservation_id],
+        )
+        conn.commit()
 
     logger.info("Cancelled pending tasks for reservation", reservation_id=reservation_id)
 
@@ -181,5 +179,5 @@ def _start_housekeeping_dispatch(task_id, property_id, room_id, room_number):
                 "roomNumber": room_number,
             }),
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to start housekeeping dispatch", task_id=task_id)

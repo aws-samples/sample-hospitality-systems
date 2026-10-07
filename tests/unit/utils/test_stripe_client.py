@@ -7,7 +7,6 @@ Covers secret caching, and that each wrapper builds the right Stripe call.
 from unittest.mock import MagicMock
 
 import pytest
-
 import utils.stripe_client as sc
 
 

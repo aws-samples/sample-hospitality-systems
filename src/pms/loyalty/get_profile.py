@@ -5,11 +5,11 @@ GET /loyalty/{guestId}
 Returns loyalty summary with tier, points, and progress to next tier.
 """
 
-from utils.logger import get_logger
 from utils.database import get_conn
-from utils.response import ok, error, forbidden, server_error
+from utils.logger import get_logger
+from utils.response import error, forbidden, ok, server_error
+from utils.tenant import ForbiddenError, require_groups
 from utils.validation import validate_uuid
-from utils.tenant import require_groups, ForbiddenError
 
 logger = get_logger("pms-loyalty")
 
@@ -31,17 +31,16 @@ def handler(event, context):
             event.get("pathParameters", {}).get("guestId"), "guestId"
         )
 
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT guest_id, first_name, last_name, loyalty_tier, "
-                    "points_balance, lifetime_points_earned, total_stays "
-                    "FROM guests WHERE guest_id = %s",
-                    [guest_id],
-                )
-                guest = cur.fetchone()
-                if not guest:
-                    return error(404, "NOT_FOUND", "Guest not found")
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT guest_id, first_name, last_name, loyalty_tier, "
+                "points_balance, lifetime_points_earned, total_stays "
+                "FROM guests WHERE guest_id = %s",
+                [guest_id],
+            )
+            guest = cur.fetchone()
+            if not guest:
+                return error(404, "NOT_FOUND", "Guest not found")
 
         # Calculate tier progress
         tier_info = TIER_THRESHOLDS.get(guest["loyalty_tier"], TIER_THRESHOLDS["NONE"])
@@ -67,6 +66,6 @@ def handler(event, context):
         return forbidden(str(e))
     except ValueError as e:
         return error(400, 'VALIDATION_ERROR', str(e))
-    except Exception as e:
+    except Exception:
         logger.exception("Error getting loyalty profile")
         return server_error()

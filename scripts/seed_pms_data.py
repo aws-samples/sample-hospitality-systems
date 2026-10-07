@@ -12,10 +12,9 @@ Usage:
 """
 
 import argparse
-import uuid
 import random
+import uuid
 from datetime import date, timedelta
-from decimal import Decimal
 
 # Guest data matching Cognito users
 GUESTS = [
@@ -99,7 +98,7 @@ def seed_booking_history(conn, guest_ids):
             guest_id = guest_ids[guest["email"]]
             stays_to_create = min(guest["total_stays"], 5)  # Cap at 5 past reservations
 
-            for i in range(stays_to_create):
+            for _i in range(stays_to_create):
                 property_id = random.choice(properties)
                 check_in = date.today() - timedelta(days=random.randint(30, 365))
                 nights = random.randint(1, 5)
@@ -158,7 +157,7 @@ def main():
     )
 
     print(f"\n{'='*60}")
-    print(f"AnyCompany Hotel PMS — Database Seeding")
+    print("AnyCompany Hotel PMS — Database Seeding")
     print(f"Host: {args.db_host}")
     print(f"Database: {args.db_name}")
     print(f"{'='*60}")
