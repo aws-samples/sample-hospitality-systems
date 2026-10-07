@@ -31,6 +31,12 @@ logger = get_logger("booking")
 stripe_secret_arn = os.environ.get("STRIPE_SECRET_ARN")
 
 
+class _AvailabilityConflict(Exception):
+    """Raised when inventory for one or more requested nights was claimed by a
+    concurrent booking between the availability check and the atomic decrement.
+    Surfaced to the caller as a 409 (not a 500)."""
+
+
 def _serialize(value):
     """Convert non-JSON-serializable types to strings."""
     if isinstance(value, uuid.UUID):
@@ -105,10 +111,14 @@ def handler(event, context):
         payment_intent = None
 
         try:
-            # Fetch the cart
+            # Fetch the cart. FOR UPDATE takes a row lock so two concurrent
+            # completions of the SAME cart serialize: the second waits here,
+            # then re-reads the now-CONVERTED row and is rejected below. This
+            # prevents duplicate reservations / double charges from double
+            # submits, retries, or multiple tabs.
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM booking_carts WHERE cart_id = %s",
+                    "SELECT * FROM booking_carts WHERE cart_id = %s FOR UPDATE",
                     (cart_id,),
                 )
                 cart = cur.fetchone()
@@ -357,7 +367,14 @@ def handler(event, context):
                 )
                 reservation = cur.fetchone()
 
-            # Step F: Update availability (increment sold for each date in range)
+            # Step F: Atomically claim inventory for each night. The capacity
+            # guard (available + overbooking_allowance > 0) is evaluated inside
+            # the UPDATE, so a concurrent booking that took the last unit causes
+            # this row to be skipped. If we update fewer rows than nights, some
+            # night sold out during this request — abort and roll back (no
+            # charge; capture happens only after commit). `available` is a
+            # generated column (total_inventory - sold - blocked), so we guard
+            # on the pre-increment expression explicitly.
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -366,9 +383,14 @@ def handler(event, context):
                     WHERE room_type_id = %s
                       AND date >= %s
                       AND date < %s
+                      AND (total_inventory - sold - blocked) + COALESCE(overbooking_allowance, 0) > 0
                     """,
                     (room_type_id, check_in_date.isoformat(), check_out_date.isoformat()),
                 )
+                if cur.rowcount != num_nights:
+                    raise _AvailabilityConflict(
+                        f"claimed {cur.rowcount} of {num_nights} nights"
+                    )
 
             # Step G: Insert payment authorization record
             authorization_id = str(uuid.uuid4())
@@ -447,25 +469,86 @@ def handler(event, context):
             stripe_charge_id = charge.id
             receipt_url = getattr(charge, "receipt_url", None)
 
-        try:
-            conn2 = get_conn()
-            with conn2.cursor() as cur:
-                cur.execute(
-                    "UPDATE payment_authorizations SET status = 'CAPTURED', updated_at = %s WHERE authorization_id = %s",
-                    (datetime.now(timezone.utc), authorization_id),
+        # Record the capture in its own transaction (kept separate from Tx1 so a
+        # slow Stripe call never holds a DB transaction open). The card has
+        # ALREADY been charged at this point, so a failure here must NOT fail the
+        # request (that could trigger a client retry -> double charge). Instead:
+        # retry once for transient blips, then make the failure loud and durable
+        # (error log + a reconciliation event) so the AUTHORIZED-but-charged /
+        # missing-capture-row divergence can be reconciled out of band.
+        capture_recorded = False
+        record_err = None
+        for attempt in range(2):
+            try:
+                conn2 = get_conn()
+                with conn2.cursor() as cur:
+                    cur.execute(
+                        "UPDATE payment_authorizations SET status = 'CAPTURED', updated_at = %s WHERE authorization_id = %s",
+                        (datetime.now(timezone.utc), authorization_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO payment_captures (
+                            capture_id, authorization_id, captured_amount,
+                            stripe_charge_id, receipt_url, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (capture_id, authorization_id, total_after_tax, stripe_charge_id, receipt_url, datetime.now(timezone.utc)),
+                    )
+                conn2.commit()
+                capture_recorded = True
+                break
+            except Exception as cap_err:
+                record_err = cap_err
+                try:
+                    conn2.rollback()
+                except Exception:
+                    pass
+                logger.warning(
+                    "Failed to record capture in DB",
+                    attempt=attempt + 1,
+                    error=str(cap_err),
                 )
-                cur.execute(
-                    """
-                    INSERT INTO payment_captures (
-                        capture_id, authorization_id, captured_amount,
-                        stripe_charge_id, receipt_url, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (capture_id, authorization_id, total_after_tax, stripe_charge_id, receipt_url, datetime.now(timezone.utc)),
+
+        if not capture_recorded:
+            # Money moved but the DB record did not land. Emit a durable,
+            # reconcilable signal (loud error + dedicated event) — do NOT fail
+            # the request, since the guest has already been charged.
+            logger.error(
+                "Payment captured at Stripe but capture record failed to persist — "
+                "manual reconciliation required",
+                reservation_id=reservation_id,
+                authorization_id=authorization_id,
+                capture_id=capture_id,
+                stripe_payment_intent_id=payment_intent.id,
+                stripe_charge_id=stripe_charge_id,
+                amount=str(total_after_tax),
+                currency="USD",
+                error=str(record_err),
+            )
+            try:
+                publish_event(
+                    source="anycompany.payments",
+                    detail_type="payment.capture_recording_failed",
+                    detail={
+                        "reservationId": reservation_id,
+                        "confirmationNumber": confirmation_number,
+                        "guestId": guest_id,
+                        "authorizationId": authorization_id,
+                        "captureId": capture_id,
+                        "stripePaymentIntentId": payment_intent.id,
+                        "stripeChargeId": stripe_charge_id,
+                        "amount": str(total_after_tax),
+                        "currency": "USD",
+                    },
                 )
-            conn2.commit()
-        except Exception as cap_err:
-            logger.warning("Failed to record capture in DB", error=str(cap_err))
+            except Exception as event_err:
+                logger.error(
+                    "Failed to publish payment.capture_recording_failed event",
+                    reservation_id=reservation_id,
+                    authorization_id=authorization_id,
+                    error=str(event_err),
+                )
 
         # Publish events (outside transaction — best effort)
         try:
@@ -536,6 +619,16 @@ def handler(event, context):
 
         return created(response_data)
 
+    except _AvailabilityConflict as conflict:
+        # Inventory sold out concurrently; the transaction was rolled back and
+        # the uncaptured PaymentIntent cancelled in the inner handler. No charge.
+        logger.info("Booking aborted — availability conflict", detail=str(conflict))
+        return error(
+            409,
+            "AVAILABILITY_CONFLICT",
+            "Room type is no longer available for the requested dates. "
+            "Another guest may have just booked it. Please try again.",
+        )
     except Exception as e:
         logger.exception("Error completing booking")
         return server_error("Failed to complete booking.")
