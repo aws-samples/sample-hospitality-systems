@@ -10,6 +10,7 @@ from utils.tenant import (
     get_region,
     has_group,
     require_groups,
+    resolve_property_scope,
     verify_property_access,
 )
 
@@ -115,3 +116,77 @@ class TestGetAccessibleProperties:
     def test_chain_user_gets_none(self):
         event = _make_event(groups=["Admin"])
         assert get_accessible_properties(event) is None
+
+
+class TestResolvePropertyScope:
+    """
+    Collection-query scoping must fail CLOSED.
+
+    The regression these guard: `get_property_id(event) or request.propertyId`
+    yields None for a caller with no property claim, which a NULL-guarded SQL
+    predicate then reads as "no filter" — i.e. every property in the chain.
+    Access level must come from the group claim (which a signed-in user cannot
+    alter), never from the mere absence of an attribute claim.
+    """
+
+    def test_property_scoped_caller_is_pinned(self):
+        event = _make_event(property_id="prop-123", groups=["FrontDesk"])
+        assert resolve_property_scope(event) == ("prop-123", None)
+
+    def test_property_scoped_caller_cannot_widen_or_move(self):
+        """A requested propertyId is ignored, not honoured, when pinned."""
+        event = _make_event(property_id="prop-123", groups=["FrontDesk"])
+        assert resolve_property_scope(event, "prop-456").property_id == "prop-123"
+
+    def test_chain_caller_is_unrestricted(self):
+        event = _make_event(groups=["Admin"])
+        assert resolve_property_scope(event) == (None, None)
+
+    def test_chain_caller_may_narrow(self):
+        event = _make_event(groups=["Admin"])
+        assert resolve_property_scope(event, "prop-456").property_id == "prop-456"
+
+    def test_missing_property_claim_without_group_is_denied(self):
+        """The core fail-closed case: absent claim is not chain-level access."""
+        event = _make_event(groups=["FrontDesk"])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(event)
+
+    def test_empty_property_claim_without_group_is_denied(self):
+        event = _make_event(property_id="", groups=["Housekeeping"])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(event)
+
+    def test_missing_claim_does_not_let_caller_request_any_property(self):
+        event = _make_event(groups=["FrontDesk"])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(event, "prop-456")
+
+    def test_no_groups_at_all_is_denied(self):
+        event = _make_event(groups=[])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(event)
+
+    def test_regional_caller_is_restricted_to_their_region(self):
+        event = _make_event(region="Northeast", groups=["RegionalManager"])
+        assert resolve_property_scope(event) == (None, "Northeast")
+
+    def test_regional_caller_narrowing_keeps_region_restriction(self):
+        """Region must still apply, so narrowing can't reach another region."""
+        event = _make_event(region="Northeast", groups=["RegionalManager"])
+        scope = resolve_property_scope(event, "prop-456")
+        assert scope == ("prop-456", "Northeast")
+
+    def test_regional_caller_without_region_claim_is_denied(self):
+        """A missing region must not be more privileged than a present one."""
+        event = _make_event(groups=["RegionalManager"])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(event)
+
+    def test_group_claim_wins_over_absent_attribute(self):
+        """Sanity: chain-level group is what grants breadth, not claim absence."""
+        denied = _make_event(groups=["FrontDesk"])
+        allowed = _make_event(groups=["Manager"])
+        with pytest.raises(ForbiddenError):
+            resolve_property_scope(denied)
+        assert resolve_property_scope(allowed) == (None, None)

@@ -15,6 +15,13 @@ distinguish them from demo/simulator/real data):
     testsuite-frontdesk@example.test     FrontDesk       property-pinned
     testsuite-housekeeping@example.test  Housekeeping    property-pinned
     testsuite-guest@example.test         (none)          guest-facing CRS
+    testsuite-frontdesk-unscoped@example.test
+                                         FrontDesk       NO scope attribute
+
+The last user is deliberately mis-provisioned: a property-scoped role with no
+`custom:property_id`. It exists so the live suite can prove that a staff user
+whose scope can't be established gets denied instead of being handed the whole
+chain (tests/integration/test_tenant_scope_regression.py).
 
 Usage:
     python scripts/seed_test_users.py \\
@@ -46,7 +53,13 @@ TEST_USERS = [
     ("frontdesk",    "testsuite-frontdesk",    ["FrontDesk"],        "property"),
     ("housekeeping", "testsuite-housekeeping", ["Housekeeping"],     "property"),
     ("guest",        "testsuite-guest",        [],                   "guest"),
+    # Deliberately mis-provisioned: property-scoped role, no scope attribute.
+    ("frontdesk_unscoped", "testsuite-frontdesk-unscoped", ["FrontDesk"], "unscoped"),
 ]
+
+# Attributes that confer tenant scope. upsert_user removes any of these that a
+# user's scope shouldn't carry, so re-seeding converges instead of only adding.
+SCOPE_ATTRIBUTES = ("custom:property_id", "custom:region")
 
 
 def _gen_password() -> str:
@@ -84,6 +97,22 @@ def upsert_user(cognito, pool_id, email, groups, scope, password, property_id, r
         cognito.admin_update_user_attributes(
             UserPoolId=pool_id, Username=email, UserAttributes=attributes
         )
+        # admin_update_user_attributes only adds/overwrites. Drop any scope
+        # attribute this user shouldn't have (e.g. so the unscoped user really
+        # is unscoped even if it was ever seeded with one).
+        wanted = {a["Name"] for a in attributes}
+        current = {
+            a["Name"]
+            for a in cognito.admin_get_user(UserPoolId=pool_id, Username=email)[
+                "UserAttributes"
+            ]
+        }
+        stale = [n for n in SCOPE_ATTRIBUTES if n in current and n not in wanted]
+        if stale:
+            cognito.admin_delete_user_attributes(
+                UserPoolId=pool_id, Username=email, UserAttributeNames=stale
+            )
+            print(f"          removed stale {', '.join(stale)}")
 
     cognito.admin_set_user_password(
         UserPoolId=pool_id, Username=email, Password=password, Permanent=True

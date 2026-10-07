@@ -7,7 +7,8 @@ GET /housekeeping/tasks?status=&priority=&floor=&assignedTo=&page=&limit=
 from utils.database import get_conn
 from utils.logger import get_logger
 from utils.response import error, forbidden, ok, server_error
-from utils.tenant import ForbiddenError, get_property_id, require_groups
+from utils.tenant import ForbiddenError, require_groups, resolve_property_scope
+from utils.validation import validate_uuid
 
 logger = get_logger("pms-housekeeping")
 
@@ -25,9 +26,14 @@ def handler(event, context):
         limit = min(int(params.get("limit", "50")), 100)
         offset = (page - 1) * limit
 
-        property_id = get_property_id(event)
-        if not property_id:
-            property_id = params.get("propertyId")
+        # Fails closed when the caller is neither property-pinned nor in a
+        # chain-level group — an absent custom:property_id claim is NOT read as
+        # chain-level access. RegionalManager is not admitted by require_groups
+        # above, so scope.region is always None here.
+        requested_property_id = params.get("propertyId")
+        if requested_property_id:
+            validate_uuid(requested_property_id, "propertyId")
+        property_id = resolve_property_scope(event, requested_property_id).property_id
 
         # Static queries; all filters are optional (NULL-guarded, each bound twice).
         filter_params = [

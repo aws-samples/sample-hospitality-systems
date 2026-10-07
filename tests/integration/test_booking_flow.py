@@ -9,7 +9,16 @@ All created data is testsuite- marked and torn down via the `track`
 fixture; the sweeper is the backstop.
 """
 
+from datetime import date, timedelta
+
 import pytest
+
+# Relative stay window. Hardcoded dates rot: once they pass, the API correctly
+# rejects them ("check_in date must be today or in the future") and the test
+# fails for a reason unrelated to the booking flow. 30 days out stays inside the
+# seeded 365-day availability window.
+CHECK_IN = str(date.today() + timedelta(days=30))
+CHECK_OUT = str(date.today() + timedelta(days=32))
 
 
 @pytest.fixture
@@ -45,7 +54,7 @@ class TestBookingFlow:
         # 1. Search for availability (public).
         status, search = api.post(
             "/booking/search",
-            body={"checkIn": "2026-09-10", "checkOut": "2026-09-12", "adults": 2, "limit": 5},
+            body={"checkIn": CHECK_IN, "checkOut": CHECK_OUT, "adults": 2, "limit": 5},
         )
         assert status == 200, search
         results = search.get("data") or []
@@ -68,8 +77,8 @@ class TestBookingFlow:
                 "propertyId": property_id,
                 "roomTypeId": room_type_id,
                 "ratePlanId": rate_plan_id,
-                "checkIn": "2026-09-10",
-                "checkOut": "2026-09-12",
+                "checkIn": CHECK_IN,
+                "checkOut": CHECK_OUT,
                 "adults": 2,
                 "sessionId": f"testsuite-{uuid.uuid4().hex}",
             },

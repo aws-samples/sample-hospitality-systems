@@ -10,7 +10,7 @@ from datetime import date
 from utils.database import get_conn
 from utils.logger import get_logger
 from utils.response import error, forbidden, ok, server_error
-from utils.tenant import ForbiddenError, get_property_id, get_region, require_groups
+from utils.tenant import ForbiddenError, require_groups, resolve_property_scope
 
 logger = get_logger("pms-reporting")
 
@@ -25,16 +25,18 @@ def handler(event, context):
         end_date = params.get("endDate", str(date.today()))
         region_filter = params.get("region")
 
-        # Scope by caller's access level
-        caller_property_id = get_property_id(event)
-        caller_region = get_region(event)
-
-        # Scope precedence (mutually exclusive): a property-scoped caller is
-        # pinned to their property; a regional caller to their region; otherwise
-        # an optional region query-param. Bound as NULL-guard params on a static
-        # query (no SQL assembled from strings).
-        property_scope = caller_property_id or None
-        region_scope = None if caller_property_id else (caller_region or region_filter or None)
+        # Scope by caller's access level. Precedence is handled by
+        # resolve_property_scope: a property-scoped caller is pinned to their
+        # property, a regional caller to their own region (and is denied
+        # outright if that claim is missing rather than widened to the chain),
+        # and only a chain-level caller may use the optional region query-param.
+        # Bound as NULL-guard params on a static query (no SQL assembled from
+        # strings).
+        scope = resolve_property_scope(event)
+        property_scope = scope.property_id
+        region_scope = (
+            None if property_scope else (scope.region or region_filter or None)
+        )
 
         with get_conn() as conn, conn.cursor() as cur:
             # Get properties with room counts and current occupancy

@@ -98,13 +98,28 @@ Resources:
         - custom:guest_id
         - custom:property_id
         - custom:region
+      # WriteAttributes deliberately EXCLUDES every custom: attribute.
+      #
+      # custom:property_id and custom:region are authorization inputs: the PMS
+      # derives a staff user's tenant scope from them (utils/tenant.py). An
+      # attribute listed here is self-writable by the signed-in user via the
+      # standard Cognito UpdateUserAttributes API, using the access token that
+      # native (SRP) auth already issues with the
+      # aws.cognito.signin.user.admin scope. Listing them here would let a
+      # property-scoped staff user re-scope themselves to another property, so
+      # they are admin-managed only (AdminUpdateUserAttributes / AdminCreateUser
+      # — see scripts/seed_cognito_users.py).
+      #
+      # custom:guest_id is not authorization-bearing today (handlers resolve the
+      # guest from the immutable `sub` claim, not this attribute), but it is an
+      # identity binding, so it stays admin-managed too rather than becoming a
+      # latent risk.
+      #
+      # Only genuine self-service profile fields remain writable.
       WriteAttributes:
         - email
         - given_name
         - family_name
-        - custom:guest_id
-        - custom:property_id
-        - custom:region
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 30
@@ -118,9 +133,11 @@ Resources:
   # contract test harnesses (which authenticate as seeded service users via
   # AdminInitiateAuth). It is NOT embedded in any frontend bundle, so the public
   # SPA client can stay SRP-only. GenerateSecret is false so callers don't need
-  # to compute a SECRET_HASH. ReadAttributes/WriteAttributes mirror the SPA client
-  # so custom:property_id / custom:region flow into the issued tokens — required
-  # for property-scoped staff/service users to work.
+  # to compute a SECRET_HASH. ReadAttributes mirrors the SPA client so
+  # custom:property_id / custom:region flow into the issued tokens — required
+  # for property-scoped staff/service users to work. WriteAttributes excludes
+  # them for the same reason as the SPA client above: they are authorization
+  # inputs and must stay admin-managed.
   AdminAuthClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -138,13 +155,11 @@ Resources:
         - custom:guest_id
         - custom:property_id
         - custom:region
+      # See the SPA client above: custom: attributes are admin-managed only.
       WriteAttributes:
         - email
         - given_name
         - family_name
-        - custom:guest_id
-        - custom:property_id
-        - custom:region
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 30

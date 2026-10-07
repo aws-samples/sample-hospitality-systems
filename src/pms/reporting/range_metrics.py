@@ -30,14 +30,11 @@ from utils.database import get_conn
 from utils.logger import get_logger
 from utils.response import error, forbidden, ok, server_error
 from utils.tenant import (
-    CHAIN_LEVEL_GROUPS,
-    REGIONAL_GROUPS,
     ForbiddenError,
-    get_groups_from_event,
-    get_property_id,
-    get_region,
     require_groups,
+    resolve_property_scope,
 )
+from utils.validation import validate_uuid
 
 logger = get_logger("pms-reporting")
 
@@ -75,51 +72,34 @@ def handler(event, context):
 
         # Resolve the effective property scope. Property-pinned callers cannot
         # widen to the chain aggregate; regional callers see only their region.
-        caller_property_id = get_property_id(event)
-        caller_region = get_region(event)
-        user_groups = set(get_groups_from_event(event))
-
-        scope_property_ids: list[str] | None = None  # None == all in scope
-
-        if caller_property_id:
-            # Property-pinned: ignore the requested propertyId, always use theirs.
-            scope_property_ids = [caller_property_id]
-        elif requested_property_id and requested_property_id != CHAIN_WIDE_SENTINEL:
-            scope_property_ids = [requested_property_id]
-        # else: chain or region wide. We will filter by region in SQL when needed.
+        # resolve_property_scope() derives the caller's level from the group
+        # claim and denies outright when there is no property claim and no
+        # qualifying group (and when a regional caller has no region), so an
+        # absent claim can never widen the scope.
+        narrowed = (
+            None if requested_property_id == CHAIN_WIDE_SENTINEL
+            else requested_property_id
+        )
+        if narrowed:
+            validate_uuid(narrowed, "propertyId")
+        scope = resolve_property_scope(event, narrowed)
 
         with get_conn() as conn, conn.cursor() as cur:
             # Resolve which property_ids are actually in scope. We always
             # materialize the list so SQL params stay simple, even for
-            # chain-wide.
-            in_scope: list[str] = []
-            if scope_property_ids is not None:
-                cur.execute(
-                    "SELECT property_id FROM properties "
-                    "WHERE property_id = ANY(%s) AND is_active = TRUE",
-                    [scope_property_ids],
-                )
-            else:
-                if caller_region or user_groups.intersection(REGIONAL_GROUPS):
-                    region = caller_region
-                    if region:
-                        cur.execute(
-                            "SELECT property_id FROM properties "
-                            "WHERE region = %s AND is_active = TRUE",
-                            [region],
-                        )
-                    else:
-                        cur.execute(
-                            "SELECT property_id FROM properties "
-                            "WHERE is_active = TRUE"
-                        )
-                elif user_groups.intersection(CHAIN_LEVEL_GROUPS):
-                    cur.execute(
-                        "SELECT property_id FROM properties WHERE is_active = TRUE"
-                    )
-                else:
-                    return forbidden("Access denied: no property access")
-
+            # chain-wide. Both scope dimensions are ANDed, so a regional
+            # caller narrowing to a propertyId still cannot reach outside
+            # their own region.
+            cur.execute(
+                "SELECT property_id FROM properties "
+                "WHERE is_active = TRUE "
+                "AND (%s::uuid IS NULL OR property_id = %s::uuid) "
+                "AND (%s::text IS NULL OR region = %s::text)",
+                [
+                    scope.property_id, scope.property_id,
+                    scope.region, scope.region,
+                ],
+            )
             in_scope = [str(r["property_id"]) for r in cur.fetchall()]
 
             if not in_scope:

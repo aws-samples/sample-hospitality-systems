@@ -4,6 +4,8 @@ These exercise the real Cognito authorizer + handler authz end-to-end.
 They read existing data and assert access control; they do not create data.
 """
 
+from datetime import date, timedelta
+
 import pytest
 
 
@@ -18,7 +20,12 @@ class TestPublicEndpoints:
     def test_booking_search_public(self, api):
         status, body = api.post(
             "/booking/search",
-            body={"checkIn": "2026-09-01", "checkOut": "2026-09-03", "adults": 2, "limit": 3},
+            body={
+                "checkIn": str(date.today() + timedelta(days=30)),
+                "checkOut": str(date.today() + timedelta(days=32)),
+                "adults": 2,
+                "limit": 3,
+            },
         )
         assert status == 200
 

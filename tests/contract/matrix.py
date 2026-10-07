@@ -27,6 +27,15 @@ role-based 403s, pagination envelopes, and not-found shapes — the
 behaviors most likely to drift if the API changes.
 """
 
+from datetime import date, timedelta
+
+# Relative stay window for availability searches. A hardcoded date rots once it
+# passes: the API correctly answers 400 ("check_in date must be today or in the
+# future"), which reads as contract drift but is only a stale input. Shapes are
+# value-independent, so moving the window doesn't touch the baseline.
+_CHECK_IN = str(date.today() + timedelta(days=30))
+_CHECK_OUT = str(date.today() + timedelta(days=32))
+
 MATRIX = [
     # ---- Public CRS reads (no token) ----
     {
@@ -65,7 +74,7 @@ MATRIX = [
         "name": "crs_booking_search",
         "api": "crs", "method": "POST", "path": "/booking/search",
         "role": None,
-        "body": {"checkIn": "2026-10-01", "checkOut": "2026-10-03", "adults": 2, "limit": 3},
+        "body": {"checkIn": _CHECK_IN, "checkOut": _CHECK_OUT, "adults": 2, "limit": 3},
         "expect": 200,
         "shape": ["success", "data"],
     },

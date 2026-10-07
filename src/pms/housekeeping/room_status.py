@@ -14,7 +14,8 @@ Scoping:
 from utils.database import get_conn
 from utils.logger import get_logger
 from utils.response import error, forbidden, ok, server_error
-from utils.tenant import ForbiddenError, get_property_id, require_groups
+from utils.tenant import ForbiddenError, require_groups, resolve_property_scope
+from utils.validation import validate_uuid
 
 logger = get_logger("pms-housekeeping")
 
@@ -24,12 +25,16 @@ def handler(event, context):
     try:
         require_groups(event, "Housekeeping", "FrontDesk", "Manager", "Admin", "RevenueManager")
 
-        # Property-level users always get their own property scope.
-        property_id = get_property_id(event)
-        if not property_id:
-            # Chain-level users may optionally narrow to a specific property.
-            params = event.get("queryStringParameters") or {}
-            property_id = params.get("propertyId")
+        # Property-level users always get their own property scope; chain-level
+        # users may optionally narrow to a specific property. Fails closed when
+        # the caller is neither — an absent custom:property_id claim is NOT read
+        # as chain-level access. RegionalManager is not admitted by
+        # require_groups above, so scope.region is always None here.
+        params = event.get("queryStringParameters") or {}
+        requested_property_id = params.get("propertyId")
+        if requested_property_id:
+            validate_uuid(requested_property_id, "propertyId")
+        property_id = resolve_property_scope(event, requested_property_id).property_id
 
         with get_conn() as conn, conn.cursor() as cur:
             if property_id:
