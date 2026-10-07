@@ -2685,7 +2685,20 @@ Resources:
           DB_NAME: anycompany
           EVENT_BUS_NAME: !GetAtt EventsStack.Outputs.EventBusName
           API_PACING_MS: "50"
-          MAX_RESERVATIONS_PER_RUN: "150"
+          # Per-run caps. Each phase is sized to keep pace with the one feeding
+          # it, so work doesn't back up across runs:
+          #   - check-ins >= arrivals, so booked stays don't accumulate
+          #     unchecked-in;
+          #   - checkouts >= check-ins, with headroom to clear stays already
+          #     due, so rooms free up for new arrivals;
+          #   - housekeeping ~1.3x checkouts: every checkout dirties a room, and
+          #     ~15% of inspections fail and send the room back for another clean.
+          # These are upper bounds; a smaller guest pool simply does less work
+          # per run. All stay well under the function's 900s timeout.
+          MAX_RESERVATIONS_PER_RUN: "200"
+          MAX_CHECKINS_PER_RUN: "250"
+          MAX_CHECKOUTS_PER_RUN: "350"
+          MAX_HOUSEKEEPING_TASKS_PER_RUN: "450"
           MAX_INCIDENTAL_CHARGES_PER_RUN: "15"
           MAX_CANCELLATIONS_PER_RUN: "5"
           FORWARD_WINDOW_DAYS: "60"

@@ -276,8 +276,8 @@ python3 scripts/seed_simulator_guests.py \
 > - **Want more activity / variety?** Re-run with a larger `--count` (e.g.
 >   `--count 500`). It's idempotent, so you can grow the pool at any time — run it
 >   again later with a higher count to add more guests without disturbing existing
->   ones. A bigger pool also avoids saturation: at the default 30 reservations per
->   4-hour run over a 30-day forward window, a pool below ~500 can fill up the
+>   ones. A bigger pool also avoids saturation: at up to 200 reservations per
+>   4-hour run over a 60-day forward window, a small pool can fill up the
 >   available booking slots, after which runs increasingly "skip" (logged as
 >   `overlap_skips`). For a lively demo, 500+ is a good target; 200 is fine for a
 >   light feed.

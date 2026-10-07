@@ -4,8 +4,9 @@ PMS Activity Simulator.
 Scheduled Lambda (every 4 hours) that drives realistic end-to-end hotel activity
 across both the CRS booking flow and the PMS staff operations. The simulator
 authenticates as a dedicated `simulator@anycompanyhotels.local` Cognito user in
-the Admin group; bookings are attributed to a pre-seeded pool of 200 guest
-profiles via an operate-as-guest override on the booking endpoint.
+the Admin group; bookings are attributed to a pre-seeded pool of dedicated
+simguest- profiles (sized by scripts/seed_simulator_guests.py) via an
+operate-as-guest override on the booking endpoint.
 
 Phases (in order, ordering is load-bearing):
 1. check_out_guests          — POST /stays/{id}/checkout
@@ -64,6 +65,16 @@ MAX_RESERVATIONS_PER_RUN = int(os.environ.get("MAX_RESERVATIONS_PER_RUN", "30"))
 # can drain a backlog of due reservations faster than new ones mature, instead
 # of only ever processing a single page.
 MAX_CHECKINS_PER_RUN = int(os.environ.get("MAX_CHECKINS_PER_RUN", "150"))
+# Per-run cap on check-OUTS. Must track MAX_CHECKINS_PER_RUN: every check-in
+# eventually becomes a checkout, so if checkouts lag, occupied rooms never free
+# up and later check-ins get blocked. Paginated (the /stays API caps a single
+# page at 100), so this can exceed 100.
+MAX_CHECKOUTS_PER_RUN = int(os.environ.get("MAX_CHECKOUTS_PER_RUN", "100"))
+# Per-run cap on housekeeping tasks processed per status (assign+complete for
+# PENDING/CLEANING, inspect for INSPECTING). Set above the checkout rate so
+# vacated rooms are cleaned back to AVAILABLE before the next wave of arrivals.
+# Paginated (the tasks API caps a single page at 100), so this can exceed 100.
+MAX_HOUSEKEEPING_TASKS_PER_RUN = int(os.environ.get("MAX_HOUSEKEEPING_TASKS_PER_RUN", "100"))
 MAX_INCIDENTAL_CHARGES_PER_RUN = int(os.environ.get("MAX_INCIDENTAL_CHARGES_PER_RUN", "15"))
 MAX_CANCELLATIONS_PER_RUN = int(os.environ.get("MAX_CANCELLATIONS_PER_RUN", "5"))
 # Per-run cap on no-show cancellations. Set high so the phase can drain a backlog
@@ -73,6 +84,13 @@ MAX_NO_SHOW_CANCELS_PER_RUN = int(os.environ.get("MAX_NO_SHOW_CANCELS_PER_RUN", 
 # distinct nights to land on, which raises the saturation ceiling for the
 # overlap-avoidance retry loop in _phase_create_reservations.
 FORWARD_WINDOW_DAYS = int(os.environ.get("FORWARD_WINDOW_DAYS", "30"))
+# How many properties to request per booking search. The simulator picks one at
+# random from this candidate set, so it must span (most of) the ~50 properties.
+# /booking/search sorts is_featured DESC, price ASC and returns one row per
+# property; a small limit (e.g. 5) funnels every booking into the same handful
+# of featured hotels — saturating them while the rest sit at zero. Keep this at
+# or above the property count so selection spreads across all available hotels.
+SEARCH_CANDIDATE_LIMIT = int(os.environ.get("SEARCH_CANDIDATE_LIMIT", "50"))
 
 INSPECTION_FAIL_RATE = 0.15
 TOKEN_REFRESH_BUFFER_SECONDS = 120
@@ -329,30 +347,72 @@ def _phase(name: str, run_stats: dict):
 
 
 def _phase_check_out_guests(stats: dict) -> None:
-    """Check out guests whose check_out_date <= today."""
-    today = date.today().isoformat()
-    response = _api_call("GET", f"{PMS_API_URL}/stays?status=CHECKED_IN&limit=100")
-    if not response["ok"]:
-        stats["error"] += 1
-        return
+    """Check out guests whose check_out_date <= today.
 
-    stays = response["data"].get("data", {}).get("stays", [])
-    for stay in stays:
-        if stay.get("checkOutDate", "9999") > today:
-            stats["skip"] += 1
-            continue
-        stay_id = stay.get("reservationId") or stay.get("stayId")
-        result = _api_call(
-            "POST",
-            f"{PMS_API_URL}/stays/{stay_id}/checkout",
-            {"expressCheckout": True},
+    Pages through CHECKED_IN stays (ascending by check-in date, the /stays default
+    sort) and checks out those whose stay has ended (check_out_date <= today), up
+    to MAX_CHECKOUTS_PER_RUN. A stay runs >= 1 night, so nothing checked in today
+    can be due — once we reach today's check-ins we stop (the ascending sort means
+    everything behind them is also not yet due). Still-active stays checked in
+    earlier are stepped past via a forward cursor (same paging strategy as
+    _phase_check_in_guests) so the next fetch resumes beyond them.
+
+    Checkouts must keep pace with check-ins: every check-in eventually becomes a
+    checkout, and if checkouts lag, rooms stay OCCUPIED and later arrivals can't
+    be assigned a room. So this cap tracks MAX_CHECKINS_PER_RUN.
+    """
+    today = date.today().isoformat()
+    page_size = 100
+    processed = 0
+    skipped = 0  # forward cursor: still-active/failed stays we stepped past
+
+    while processed < MAX_CHECKOUTS_PER_RUN:
+        page = (skipped // page_size) + 1
+        response = _api_call(
+            "GET",
+            f"{PMS_API_URL}/stays?status=CHECKED_IN&page={page}&limit={page_size}",
         )
-        if result["ok"]:
-            logger.info("checkout_completed", reservationId=stay_id)
-            stats["success"] += 1
-        else:
-            logger.warning("checkout_failed", reservationId=stay_id, status=result["status"])
+        if not response["ok"]:
             stats["error"] += 1
+            return
+
+        stays = response["data"].get("data", {}).get("stays", [])
+        stays = stays[skipped % page_size:]  # skip rows already stepped past
+        if not stays:
+            break
+
+        hit_today = False
+        for stay in stays:
+            if processed >= MAX_CHECKOUTS_PER_RUN:
+                break
+            if stay.get("checkInDate", "9999") >= today:
+                # Checked in today: not due, and (ascending sort) nothing behind
+                # it is due either.
+                hit_today = True
+                break
+            if stay.get("checkOutDate", "9999") > today:
+                # Still-active stay: leave CHECKED_IN, step past it.
+                skipped += 1
+                stats["skip"] += 1
+                continue
+            stay_id = stay.get("reservationId") or stay.get("stayId")
+            result = _api_call(
+                "POST",
+                f"{PMS_API_URL}/stays/{stay_id}/checkout",
+                {"expressCheckout": True},
+            )
+            if result["ok"]:
+                logger.info("checkout_completed", reservationId=stay_id)
+                stats["success"] += 1
+                processed += 1
+            else:
+                # Leave it and step past so we don't re-hit it this run.
+                logger.warning("checkout_failed", reservationId=stay_id, status=result["status"])
+                stats["error"] += 1
+                skipped += 1
+
+        if hit_today:
+            break
 
 
 def _phase_process_housekeeping(stats: dict) -> None:
@@ -371,75 +431,106 @@ def _phase_process_housekeeping(stats: dict) -> None:
     # transition with 409 INVALID_STATE. That's an expected race, not a failure:
     # count it as a skip, and on a PENDING-assign 409 fall through to complete
     # (the task is almost certainly CLEANING now, which IS completable).
+    # Completing/inspecting a task moves it out of its status, so re-fetching
+    # page 1 (limit is API-capped at 100) surfaces the next batch — this drains
+    # the whole backlog up to MAX_HOUSEKEEPING_TASKS_PER_RUN instead of only the
+    # first 100. A `seen` set guarantees termination: if a fetch returns only
+    # tasks we've already handled (e.g. ones that erred and stayed put), there's
+    # no forward progress, so we stop.
     for status_filter in ("PENDING", "CLEANING"):
-        response = _api_call(
-            "GET", f"{PMS_API_URL}/housekeeping/tasks?status={status_filter}&limit=100"
-        )
-        if not response["ok"]:
-            stats["error"] += 1
-            continue
-
-        tasks = response["data"].get("data", {}).get("tasks", [])
-        for task in tasks:
-            task_id = task["taskId"]
-
-            if task["status"] == "PENDING":
-                assign_resp = _api_call(
-                    "PUT",
-                    f"{PMS_API_URL}/housekeeping/tasks/{task_id}/assign",
-                    {"assignedTo": random.choice(HOUSEKEEPER_NAMES)},
-                )
-                if not assign_resp["ok"]:
-                    if assign_resp["status"] == 409:
-                        # State machine already advanced it past PENDING — benign
-                        # race. Don't skip: try to complete the (now CLEANING) task.
-                        logger.info("hk_assign_raced", taskId=task_id, status=409)
-                    else:
-                        logger.warning("hk_assign_failed", taskId=task_id, status=assign_resp["status"])
-                        stats["error"] += 1
-                        continue
-
-            complete_resp = _api_call(
-                "POST",
-                f"{PMS_API_URL}/housekeeping/tasks/{task_id}/complete",
-                {"notes": "Cleaning complete"},
+        seen: set[str] = set()
+        processed = 0
+        while processed < MAX_HOUSEKEEPING_TASKS_PER_RUN:
+            response = _api_call(
+                "GET", f"{PMS_API_URL}/housekeeping/tasks?status={status_filter}&limit=100"
             )
-            if complete_resp["ok"]:
-                logger.info("hk_completed", taskId=task_id)
+            if not response["ok"]:
+                stats["error"] += 1
+                break
+
+            tasks = response["data"].get("data", {}).get("tasks", [])
+            fresh = [t for t in tasks if t["taskId"] not in seen]
+            if not fresh:
+                break
+
+            for task in fresh:
+                if processed >= MAX_HOUSEKEEPING_TASKS_PER_RUN:
+                    break
+                task_id = task["taskId"]
+                seen.add(task_id)
+                processed += 1
+
+                if task["status"] == "PENDING":
+                    assign_resp = _api_call(
+                        "PUT",
+                        f"{PMS_API_URL}/housekeeping/tasks/{task_id}/assign",
+                        {"assignedTo": random.choice(HOUSEKEEPER_NAMES)},
+                    )
+                    if not assign_resp["ok"]:
+                        if assign_resp["status"] == 409:
+                            # State machine already advanced it past PENDING —
+                            # benign race. Fall through to complete the (now
+                            # CLEANING) task.
+                            logger.info("hk_assign_raced", taskId=task_id, status=409)
+                        else:
+                            logger.warning("hk_assign_failed", taskId=task_id, status=assign_resp["status"])
+                            stats["error"] += 1
+                            continue
+
+                complete_resp = _api_call(
+                    "POST",
+                    f"{PMS_API_URL}/housekeeping/tasks/{task_id}/complete",
+                    {"notes": "Cleaning complete"},
+                )
+                if complete_resp["ok"]:
+                    logger.info("hk_completed", taskId=task_id)
+                    stats["success"] += 1
+                elif complete_resp["status"] == 409:
+                    # Task raced past the completable state (already INSPECTING/AVAILABLE).
+                    logger.info("hk_complete_raced", taskId=task_id, status=409)
+                    stats["skip"] += 1
+                else:
+                    stats["error"] += 1
+
+    # Inspect — ~15% fail to exercise the re-clean loop. Same drain-by-refetch
+    # loop: inspected tasks leave INSPECTING (pass -> INSPECTED, fail -> back to
+    # CLEANING for next run).
+    seen = set()
+    processed = 0
+    while processed < MAX_HOUSEKEEPING_TASKS_PER_RUN:
+        inspect_resp = _api_call(
+            "GET", f"{PMS_API_URL}/housekeeping/tasks?status=INSPECTING&limit=100"
+        )
+        if not inspect_resp["ok"]:
+            stats["error"] += 1
+            break
+
+        tasks = inspect_resp["data"].get("data", {}).get("tasks", [])
+        fresh = [t for t in tasks if t["taskId"] not in seen]
+        if not fresh:
+            break
+
+        for task in fresh:
+            if processed >= MAX_HOUSEKEEPING_TASKS_PER_RUN:
+                break
+            task_id = task["taskId"]
+            seen.add(task_id)
+            processed += 1
+            passed = random.random() >= INSPECTION_FAIL_RATE
+            result = _api_call(
+                "POST",
+                f"{PMS_API_URL}/housekeeping/tasks/{task_id}/inspect",
+                {"passed": passed, "notes": "Inspection passed" if passed else "Re-clean required"},
+            )
+            if result["ok"]:
+                logger.info("hk_inspected", taskId=task_id, passed=passed)
                 stats["success"] += 1
-            elif complete_resp["status"] == 409:
-                # Task raced past the completable state (already INSPECTING/AVAILABLE).
-                logger.info("hk_complete_raced", taskId=task_id, status=409)
+            elif result["status"] == 409:
+                # Task raced past INSPECTING (state machine advanced it). Benign.
+                logger.info("hk_inspect_raced", taskId=task_id, status=409)
                 stats["skip"] += 1
             else:
                 stats["error"] += 1
-
-    # Inspect — ~15% fail to exercise the re-clean loop
-    inspect_resp = _api_call(
-        "GET", f"{PMS_API_URL}/housekeeping/tasks?status=INSPECTING&limit=100"
-    )
-    if not inspect_resp["ok"]:
-        stats["error"] += 1
-        return
-
-    tasks = inspect_resp["data"].get("data", {}).get("tasks", [])
-    for task in tasks:
-        task_id = task["taskId"]
-        passed = random.random() >= INSPECTION_FAIL_RATE
-        result = _api_call(
-            "POST",
-            f"{PMS_API_URL}/housekeeping/tasks/{task_id}/inspect",
-            {"passed": passed, "notes": "Inspection passed" if passed else "Re-clean required"},
-        )
-        if result["ok"]:
-            logger.info("hk_inspected", taskId=task_id, passed=passed)
-            stats["success"] += 1
-        elif result["status"] == 409:
-            # Task raced past INSPECTING (state machine advanced it). Benign.
-            logger.info("hk_inspect_raced", taskId=task_id, status=409)
-            stats["skip"] += 1
-        else:
-            stats["error"] += 1
 
 
 def _phase_check_in_guests(stats: dict) -> None:
@@ -755,6 +846,10 @@ def _phase_create_reservations(stats: dict) -> None:
     skips any guest who already holds an overlapping CONFIRMED/CHECKED_IN window.
     The "active windows" map is loaded once at phase start and updated in memory
     as we create new reservations during this run.
+
+    Property selection is uniform across all available hotels: the search pulls
+    up to SEARCH_CANDIDATE_LIMIT properties and picks one at random, so bookings
+    spread across the portfolio instead of funneling into the featured few.
     """
     pool = _load_guest_pool()
     properties = _load_properties()
@@ -794,7 +889,9 @@ def _phase_create_reservations(stats: dict) -> None:
             "checkIn": check_in.isoformat(),
             "checkOut": check_out.isoformat(),
             "adults": random.randint(1, 3),
-            "limit": 5,
+            # Span all available properties (not just the top few featured ones)
+            # so random.choice below spreads bookings across the whole portfolio.
+            "limit": SEARCH_CANDIDATE_LIMIT,
         }
         search = _api_call("POST", f"{CRS_API_URL}/booking/search", search_body, auth=False)
         if not search["ok"]:
