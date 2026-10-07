@@ -12,7 +12,10 @@ stripe==15.2.*
 pydantic==2.13.*
 # JWT verification (security H-2). PyJWT, not python-jose: more actively
 # maintained, which matters for auth-critical code (security review M-10).
-pyjwt[crypto]==2.13.*
+pyjwt[crypto]==2.15.*
+# Transitive (via requests). Floor pinned so dependency resolution can't select
+# a release affected by CVE-2026-45409, fixed in 3.15.
+idna>=3.15,<4
 # Time-zone database for zoneinfo. Lambda's python3.12 base image does not
 # reliably ship the system tz data, so America/New_York lookups raise
 # ZoneInfoNotFoundError without this. Used by the night audit to date room

@@ -19,8 +19,11 @@ import json
 import os
 import sys
 
-# engine + matrix live alongside this file
-sys.path.insert(0, os.path.dirname(__file__))
+# engine + matrix live alongside this file; engine also uses the shared Lambda
+# layer's utils (pytest gets that from pyproject.toml's pythonpath).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "src", "layers", "common"))
 from engine import ContractContext, normalize_response  # noqa: E402
 from matrix import MATRIX  # noqa: E402
 

@@ -22,21 +22,22 @@ Design (per the agreed approach — defense-in-depth, env-gated, fail-open-to-au
 - Verification can be disabled with JWT_VERIFY_ENABLED=false (e.g. for local
   unit tests that build synthetic events). It defaults to enabled.
 
-The JWKS is fetched once per warm container over HTTPS (stdlib urllib — no extra
-dependency) and cached in a module global with a TTL, so the steady-state cost is
-the signature check only (~0.06 ms/call measured); the network fetch is paid once
-per container, not per request.
+The JWKS is fetched once per warm container over HTTPS (stdlib urllib via
+utils.https, so no extra dependency) and cached in a module global with a TTL,
+so the steady-state cost is the signature check only (~0.06 ms/call measured);
+the network fetch is paid once per container, not per request.
 """
 
 import json
 import os
 import time
-import urllib.request
 from typing import Any
 
 import jwt
 from jwt import PyJWTError
 from jwt.algorithms import RSAAlgorithm
+
+from utils.https import open_https
 
 # JWKS cache (per warm container).
 _jwks_cache: dict | None = None
@@ -70,7 +71,15 @@ def _get_jwks(force_refresh: bool = False) -> dict:
     ):
         return _jwks_cache
 
-    with urllib.request.urlopen(_jwks_url(), timeout=5) as resp:
+    # The only host the JWKS may come from. Compared against the URL's parsed
+    # hostname, so an unexpected AWS_REGION value that changes how the URL
+    # parses is refused rather than fetched. open_https also enforces https://
+    # and does not follow redirects.
+    with open_https(
+        _jwks_url(),
+        allowed_hosts={f"cognito-idp.{_REGION}.amazonaws.com"},
+        timeout=5,
+    ) as resp:
         _jwks_cache = json.loads(resp.read())
     _jwks_fetched_at = now
     return _jwks_cache

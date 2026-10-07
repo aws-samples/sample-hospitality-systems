@@ -95,8 +95,11 @@ def jv(monkeypatch):
     return m
 
 
-def _install_jwks(monkeypatch, jv_module, jwks_keys, counter=None):
-    """Patch _get_jwks indirectly by stubbing urllib to return the given JWKS."""
+def _install_jwks(monkeypatch, jv_module, jwks_keys, counter=None, calls=None):
+    """Patch _get_jwks indirectly by stubbing the HTTPS fetch to return the JWKS.
+
+    `calls`, if given, collects (url, allowed_hosts) for each fetch.
+    """
     payload = json.dumps({"keys": jwks_keys}).encode()
 
     class _Resp:
@@ -111,7 +114,12 @@ def _install_jwks(monkeypatch, jv_module, jwks_keys, counter=None):
                 counter.append(1)
             return payload
 
-    monkeypatch.setattr(jv_module.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    def _fake_open_https(url, *, allowed_hosts, timeout):
+        if calls is not None:
+            calls.append((url, set(allowed_hosts)))
+        return _Resp()
+
+    monkeypatch.setattr(jv_module, "open_https", _fake_open_https)
 
 
 def test_valid_token_passes(jv, monkeypatch):
@@ -120,6 +128,17 @@ def test_valid_token_passes(jv, monkeypatch):
     claims = jv.verify_token(_token(key))
     assert claims["sub"] == "user-uuid-1"
     assert claims["email"] == "admin@anycompanyhotels.com"
+
+
+def test_jwks_fetched_only_from_the_cognito_host(jv, monkeypatch):
+    """The JWKS fetch is pinned to the exact Cognito host for the region."""
+    key = _make_key()
+    calls = []
+    _install_jwks(monkeypatch, jv, [_jwk(key)], calls=calls)
+    jv.verify_token(_token(key))
+    url, allowed = calls[0]
+    assert url == f"https://cognito-idp.{REGION}.amazonaws.com/{POOL_ID}/.well-known/jwks.json"
+    assert allowed == {f"cognito-idp.{REGION}.amazonaws.com"}
 
 
 def test_forged_signature_rejected(jv, monkeypatch):

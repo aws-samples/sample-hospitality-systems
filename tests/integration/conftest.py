@@ -25,6 +25,7 @@ import urllib.request
 
 import boto3
 import pytest
+from utils.https import host_of, open_https
 
 STACK_NAME = os.environ.get("TEST_STACK_NAME", "anycompany-booking")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -128,14 +129,16 @@ def token_for(aws, stack_outputs, test_creds):
     return _get
 
 
-def _request(method, url, token=None, body=None):
+def _request(method, url, allowed_hosts, token=None, body=None):
+    """Call a stack API over HTTPS. Requests carry bearer tokens, so only the
+    calling client's own API host is allowed (see utils.https)."""
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, method=method, headers=headers, data=data)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with open_https(req, allowed_hosts=allowed_hosts, timeout=30) as resp:
             return resp.status, json.loads(resp.read() or "null")
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read() or "null")
@@ -145,11 +148,12 @@ def _request(method, url, token=None, body=None):
 def api(stack_outputs, token_for):
     """Authenticated client for the CRS API. api.get(path, role=...)."""
     base = stack_outputs["ApiUrl"].rstrip("/")
+    hosts = {host_of(base)}
 
     class _Client:
         def _call(self, method, path, role=None, body=None):
             token = token_for(role) if role else None
-            return _request(method, base + path, token, body)
+            return _request(method, base + path, hosts, token, body)
 
         def get(self, path, role=None):
             return self._call("GET", path, role)
@@ -170,11 +174,12 @@ def api(stack_outputs, token_for):
 def pms_api(stack_outputs, token_for):
     """Authenticated client for the PMS API."""
     base = stack_outputs["PmsApiUrl"].rstrip("/")
+    hosts = {host_of(base)}
 
     class _Client:
         def _call(self, method, path, role=None, body=None):
             token = token_for(role) if role else None
-            return _request(method, base + path, token, body)
+            return _request(method, base + path, hosts, token, body)
 
         def get(self, path, role=None):
             return self._call("GET", path, role)

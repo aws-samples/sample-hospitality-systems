@@ -17,6 +17,7 @@ import urllib.request
 
 import boto3
 from matrix import VOLATILE_KEYS
+from utils.https import host_of, open_https
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 STACK_NAME = os.environ.get("TEST_STACK_NAME", "anycompany-booking")
@@ -86,6 +87,8 @@ class ContractContext:
         # ApiUrl / PmsApiUrl are the CRS and PMS API base URLs (stack outputs).
         self.crs_base = self.outputs["ApiUrl"].rstrip("/")
         self.pms_base = self.outputs["PmsApiUrl"].rstrip("/")
+        # Requests carry bearer tokens: allow only the stack's two API hosts.
+        self.api_hosts = {host_of(self.crs_base), host_of(self.pms_base)}
 
         sm = self.session.client("secretsmanager")
         creds = json.loads(sm.get_secret_value(SecretId=TESTSUITE_SECRET)["SecretString"])
@@ -151,7 +154,7 @@ class ContractContext:
         data = json.dumps(entry["body"]).encode() if entry.get("body") is not None else None
         req = urllib.request.Request(url, method=entry["method"], headers=headers, data=data)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with open_https(req, allowed_hosts=self.api_hosts, timeout=30) as resp:
                 return resp.status, json.loads(resp.read() or "null")
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or "null")

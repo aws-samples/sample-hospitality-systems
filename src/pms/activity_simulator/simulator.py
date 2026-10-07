@@ -44,6 +44,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import boto3
+from utils.https import host_of, open_https
 from utils.logger import get_logger
 
 logger = get_logger("pms-activity-simulator")
@@ -54,6 +55,9 @@ logger = get_logger("pms-activity-simulator")
 
 CRS_API_URL = os.environ["CRS_API_URL"]
 PMS_API_URL = os.environ["PMS_API_URL"]
+# The only hosts the simulator may call. Every request carries a bearer token,
+# so outbound calls are limited to these hosts over HTTPS (see utils.https).
+_ALLOWED_API_HOSTS = frozenset({host_of(CRS_API_URL), host_of(PMS_API_URL)})
 COGNITO_USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 # Dedicated admin-auth client (not the public SPA client).
 ADMIN_AUTH_CLIENT_ID = os.environ["ADMIN_AUTH_CLIENT_ID"]
@@ -220,7 +224,7 @@ def _api_call(method: str, url: str, body: dict | None = None, auth: bool = True
         encoded = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url=url, method=method, headers=headers, data=encoded)
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with open_https(req, allowed_hosts=_ALLOWED_API_HOSTS, timeout=20) as r:
                 return r.status, r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.read()
