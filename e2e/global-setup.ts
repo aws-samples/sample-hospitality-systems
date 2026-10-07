@@ -33,6 +33,9 @@ export default async function globalSetup() {
   const creds = JSON.parse(secret.SecretString ?? '{}');
   process.env.TEST_PASSWORD = creds.password ?? '';
   process.env.TEST_ADMIN_EMAIL = creds.users?.admin?.email ?? '';
+  // A dedicated CRS user: signing in creates a guest profile, which would
+  // otherwise change the state the API contract suite expects of `guest`.
+  process.env.TEST_CRS_BROWSER_EMAIL = creds.users?.crs_browser?.email ?? '';
 
   if (!process.env.PMS_URL || !process.env.TEST_PASSWORD) {
     throw new Error(

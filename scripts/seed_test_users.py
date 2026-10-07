@@ -17,6 +17,7 @@ distinguish them from demo/simulator/real data):
     testsuite-guest@example.test         (none)          guest-facing CRS
     testsuite-frontdesk-unscoped@example.test
                                          FrontDesk       NO scope attribute
+    testsuite-crs-browser@example.test   (none)          CRS browser tests
 
 The last user is deliberately mis-provisioned: a property-scoped role with no
 `custom:property_id`. It exists so the live suite can prove that a staff user
@@ -55,6 +56,10 @@ TEST_USERS = [
     ("guest",        "testsuite-guest",        [],                   "guest"),
     # Deliberately mis-provisioned: property-scoped role, no scope attribute.
     ("frontdesk_unscoped", "testsuite-frontdesk-unscoped", ["FrontDesk"], "unscoped"),
+    # CRS browser sign-in tests. Signing in to the CRS creates a guest profile,
+    # so these tests get their own user rather than changing the state of
+    # `guest`, which the contract suite relies on.
+    ("crs_browser",  "testsuite-crs-browser",  [],                   "guest"),
 ]
 
 # Attributes that confer tenant scope. upsert_user removes any of these that a
