@@ -62,7 +62,7 @@ const GuestSelector: React.FC<GuestSelectorProps> = ({
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center justify-between rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 transition-colors focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600"
+        className="flex w-full items-center justify-between rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 transition-colors focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600"
       >
         <span>{totalGuests} Guest{totalGuests !== 1 ? 's' : ''}</span>
         <svg className={`h-3.5 w-3.5 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

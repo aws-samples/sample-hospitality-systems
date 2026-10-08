@@ -395,7 +395,7 @@ function MetricCard({
           <p className="font-display text-3xl font-bold text-neutral-900 mt-1.5">{value}</p>
         </div>
         <div
-          className={`flex-shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full ${ACCENT_ICON_BG[accent]}`}
+          className={`shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full ${ACCENT_ICON_BG[accent]}`}
         >
           {icon}
         </div>

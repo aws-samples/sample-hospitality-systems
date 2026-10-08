@@ -205,7 +205,7 @@ const PropertyDetailPage: React.FC = () => {
 
           {/* Loading overlay when selecting room */}
           {selectingRoom && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs">
               <div className="rounded-xl bg-white p-8 shadow-xl">
                 <LoadingSpinner message="Creating your booking..." />
               </div>

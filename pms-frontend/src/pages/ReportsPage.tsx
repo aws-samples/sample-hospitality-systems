@@ -203,7 +203,7 @@ export default function ReportsPage() {
               value={range}
               onChange={(e) => setRange(e.target.value)}
               data-testid="reports-range-select"
-              className="min-w-[10rem]"
+              className="min-w-40"
             >
               {RANGE_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -385,7 +385,7 @@ export default function ReportsPage() {
             ) : !portfolioRows.length ? (
               <EmptyState title="No properties in scope" />
             ) : (
-              <div className="max-h-[14rem] overflow-y-auto">
+              <div className="max-h-56 overflow-y-auto">
                 <DataTable className="border-0 rounded-none shadow-none">
                   <THead>
                     <Tr hover={false}>
@@ -531,7 +531,7 @@ export default function ReportsPage() {
             ) : !portfolioRows.length ? (
               <EmptyState title="No properties in scope" />
             ) : (
-              <div className="max-h-[28rem] overflow-y-auto">
+              <div className="max-h-112 overflow-y-auto">
                 <DataTable className="border-0 rounded-none shadow-none">
                   <THead>
                     <Tr hover={false}>
@@ -585,7 +585,7 @@ function Kpi({
   hint?: string;
 }) {
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
+    <div className="rounded-lg border border-neutral-200 bg-white p-4 shadow-xs">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
           {label}

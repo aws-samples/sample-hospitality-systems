@@ -39,7 +39,7 @@ const RoomTypeCard: React.FC<RoomTypeCardProps> = ({
   const displayAmenities = roomType.amenities.slice(0, 6);
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm md:flex-row">
+    <div className="flex flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xs md:flex-row">
       {/* Image */}
       <div className="w-full md:w-72 lg:w-80 shrink-0">
         <ImagePlaceholder
@@ -122,7 +122,7 @@ const RoomTypeCard: React.FC<RoomTypeCardProps> = ({
           <button
             type="button"
             onClick={() => onSelect(roomType)}
-            className="rounded-lg bg-accent-500 px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent-600 focus:outline-none focus:ring-2 focus:ring-accent-400 focus:ring-offset-2 transition-colors"
+            className="rounded-lg bg-accent-500 px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent-600 focus:outline-hidden focus:ring-2 focus:ring-accent-400 focus:ring-offset-2 transition-colors"
           >
             Select Room
           </button>

@@ -108,7 +108,7 @@ export default function AuditPage() {
 
       {trigger.isSuccess && (
         <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-4 mb-6 text-sm flex items-center gap-2">
-          <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
           Audit run triggered: {trigger.data?.propertiesProcessed} properties processed
         </div>
       )}

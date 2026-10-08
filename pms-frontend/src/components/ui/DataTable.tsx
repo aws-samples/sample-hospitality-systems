@@ -7,7 +7,7 @@ type DataTableProps = HTMLAttributes<HTMLDivElement> & {
 export function DataTable({ children, className = '', ...rest }: DataTableProps) {
   return (
     <div
-      className={`overflow-x-auto rounded-xl border border-neutral-200 bg-white shadow-sm ${className}`}
+      className={`overflow-x-auto rounded-xl border border-neutral-200 bg-white shadow-xs ${className}`}
       {...rest}
     >
       <table className="w-full text-sm">{children}</table>

@@ -47,7 +47,7 @@ const BookingSummary: React.FC<BookingSummaryProps> = ({ cart }) => {
   const displayTotal = pricing.total > 0 ? pricing.total : pricing.subtotal + taxAmount - discount;
 
   return (
-    <div className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+    <div className="rounded-xl border border-neutral-200 bg-white p-6 shadow-xs">
       <h3 className="font-display text-lg font-semibold text-neutral-900">Booking Summary</h3>
 
       {/* Property and room */}

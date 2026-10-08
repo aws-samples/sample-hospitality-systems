@@ -15,7 +15,7 @@ const PAD = {
 export function Card({ children, padding = 'none', className = '', ...rest }: CardProps) {
   return (
     <div
-      className={`rounded-xl border border-neutral-200 bg-white shadow-sm ${PAD[padding]} ${className}`}
+      className={`rounded-xl border border-neutral-200 bg-white shadow-xs ${PAD[padding]} ${className}`}
       {...rest}
     >
       {children}
@@ -39,7 +39,7 @@ export function CardHeader({ title, subtitle, actions, className = '', ...rest }
         <h2 className="font-display text-lg font-semibold text-neutral-900">{title}</h2>
         {subtitle && <p className="text-sm text-neutral-500 mt-0.5">{subtitle}</p>}
       </div>
-      {actions && <div className="flex-shrink-0">{actions}</div>}
+      {actions && <div className="shrink-0">{actions}</div>}
     </div>
   );
 }

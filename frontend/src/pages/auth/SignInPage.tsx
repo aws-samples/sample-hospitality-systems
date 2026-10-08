@@ -41,7 +41,7 @@ const SignInPage: React.FC = () => {
 
   const inputClass =
     'w-full rounded-lg border border-neutral-300 bg-white px-4 py-2.5 text-sm text-neutral-800 ' +
-    'focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 transition-colors';
+    'focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 transition-colors';
 
   return (
     <PublicLayout>
@@ -97,7 +97,7 @@ const SignInPage: React.FC = () => {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600/40 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-hidden focus:ring-2 focus:ring-primary-600/40 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
               {isLoading ? 'Signing In...' : 'Sign In'}
             </button>

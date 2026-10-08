@@ -42,7 +42,7 @@ const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
   const inputClass =
     'w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 ' +
-    'focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 transition-colors';
+    'focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 transition-colors';
 
   return (
     <div className="flex items-end gap-3">

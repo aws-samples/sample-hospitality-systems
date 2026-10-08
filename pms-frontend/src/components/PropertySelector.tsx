@@ -33,7 +33,7 @@ export default function PropertySelector({
       value={selectedPropertyId ?? ''}
       onChange={(e) => onChange(e.target.value)}
       data-testid={testId}
-      className="min-w-[14rem]"
+      className="min-w-56"
     >
       {allowChainWide && <option value={CHAIN_WIDE}>All properties (aggregate)</option>}
       {properties.map((p) => (

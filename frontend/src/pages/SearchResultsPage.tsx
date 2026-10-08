@@ -119,7 +119,7 @@ const SearchResultsPage: React.FC = () => {
                       setCurrentPage(1);
                     }}
                     min={0}
-                    className="w-24 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600"
+                    className="w-24 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600"
                     placeholder="Min"
                   />
                   <span className="text-neutral-400">&mdash;</span>
@@ -131,7 +131,7 @@ const SearchResultsPage: React.FC = () => {
                       setCurrentPage(1);
                     }}
                     min={0}
-                    className="w-24 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600"
+                    className="w-24 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600"
                     placeholder="Max"
                   />
                 </div>
@@ -175,7 +175,7 @@ const SearchResultsPage: React.FC = () => {
                         type="checkbox"
                         checked={amenityFilters.includes(amenity)}
                         onChange={() => toggleAmenity(amenity)}
-                        className="h-4 w-4 rounded border-neutral-300 text-primary-600 focus:ring-primary-600"
+                        className="h-4 w-4 rounded-sm border-neutral-300 text-primary-600 focus:ring-primary-600"
                       />
                       <span className="text-sm text-neutral-600">{amenity}</span>
                     </label>

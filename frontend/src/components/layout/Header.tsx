@@ -18,7 +18,7 @@ const Header: React.FC<{ transparent?: boolean }> = ({ transparent: _transparent
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const headerBg = 'bg-white shadow-sm';
+  const headerBg = 'bg-white shadow-xs';
   const textColor = 'text-neutral-800';
   const textMuted = 'text-neutral-600';
 

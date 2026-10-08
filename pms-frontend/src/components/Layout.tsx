@@ -112,11 +112,11 @@ export default function Layout({ children }: LayoutProps) {
                 data-testid={`nav-${item.label.toLowerCase().replace(' ', '-')}`}
                 className={`flex items-center gap-3 px-6 py-2.5 text-sm font-medium transition-colors ${
                   isActive
-                    ? 'bg-primary-800 text-accent-400 border-l-2 border-accent-400 -ml-[2px] pl-[26px]'
+                    ? 'bg-primary-800 text-accent-400 border-l-2 border-accent-400 ml-[-2px] pl-[26px]'
                     : 'text-white/80 hover:bg-primary-800/60 hover:text-white'
                 }`}
               >
-                <Icon className="h-4 w-4 flex-shrink-0" strokeWidth={1.75} />
+                <Icon className="h-4 w-4 shrink-0" strokeWidth={1.75} />
                 <span>{item.label}</span>
               </Link>
             );
@@ -126,7 +126,7 @@ export default function Layout({ children }: LayoutProps) {
         {/* User footer */}
         <div className="px-6 py-4 border-t border-primary-800/60">
           <div className="flex items-center gap-3 mb-3">
-            <div className="h-9 w-9 rounded-full bg-accent-500 text-white font-semibold flex items-center justify-center flex-shrink-0">
+            <div className="h-9 w-9 rounded-full bg-accent-500 text-white font-semibold flex items-center justify-center shrink-0">
               {initial}
             </div>
             <div className="min-w-0 flex-1">

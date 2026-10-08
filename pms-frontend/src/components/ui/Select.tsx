@@ -9,7 +9,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
   return (
     <select
       ref={ref}
-      className={`rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 transition-colors ${className}`}
+      className={`rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 transition-colors ${className}`}
       {...rest}
     >
       {children}
@@ -26,7 +26,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   return (
     <input
       ref={ref}
-      className={`rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 transition-colors ${className}`}
+      className={`rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 transition-colors ${className}`}
       {...rest}
     />
   );

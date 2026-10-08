@@ -125,7 +125,7 @@ const ReservationDetailPage: React.FC = () => {
         </div>
 
         {/* Details card */}
-        <div className="mt-8 rounded-xl border border-neutral-200 bg-white shadow-sm">
+        <div className="mt-8 rounded-xl border border-neutral-200 bg-white shadow-xs">
           {/* Property & Room */}
           <div className="border-b border-neutral-100 p-6">
             <h2 className="font-display text-xl font-semibold text-neutral-900">
@@ -218,7 +218,7 @@ const ReservationDetailPage: React.FC = () => {
 
       {/* Cancel confirmation modal */}
       {showCancelModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl">
             <h3 className="font-display text-lg font-semibold text-neutral-900">
               Cancel Reservation?
@@ -236,7 +236,7 @@ const ReservationDetailPage: React.FC = () => {
                 value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)}
                 rows={2}
-                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-800 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 resize-none"
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-800 focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 resize-none"
                 placeholder="e.g., Change of plans"
               />
             </div>

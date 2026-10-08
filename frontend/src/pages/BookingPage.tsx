@@ -279,7 +279,7 @@ const BookingPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleProceedToPayment}
-                  className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600/40 transition-colors"
+                  className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-hidden focus:ring-2 focus:ring-primary-600/40 transition-colors"
                 >
                   {isAuthenticated ? 'Proceed to Payment' : 'Sign In to Continue'}
                 </button>

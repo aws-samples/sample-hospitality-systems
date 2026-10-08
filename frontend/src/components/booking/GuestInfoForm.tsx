@@ -91,7 +91,7 @@ const GuestInfoForm: React.FC<GuestInfoFormProps> = ({
   };
 
   const inputClass = (field: keyof FormErrors) =>
-    `w-full rounded-lg border px-3 py-2.5 text-sm text-neutral-800 transition-colors focus:outline-none focus:ring-1 ${
+    `w-full rounded-lg border px-3 py-2.5 text-sm text-neutral-800 transition-colors focus:outline-hidden focus:ring-1 ${
       errors[field] && touched[field]
         ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
         : 'border-neutral-300 focus:border-primary-600 focus:ring-primary-600'
@@ -186,7 +186,7 @@ const GuestInfoForm: React.FC<GuestInfoFormProps> = ({
           value={formData.specialRequests}
           onChange={(e) => handleChange('specialRequests', e.target.value)}
           rows={3}
-          className="w-full rounded-lg border border-neutral-300 px-3 py-2.5 text-sm text-neutral-800 transition-colors focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 resize-none"
+          className="w-full rounded-lg border border-neutral-300 px-3 py-2.5 text-sm text-neutral-800 transition-colors focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 resize-none"
           placeholder="e.g., Late check-in, extra pillows, high floor preference..."
         />
       </div>
@@ -195,7 +195,7 @@ const GuestInfoForm: React.FC<GuestInfoFormProps> = ({
       <button
         type="submit"
         disabled={isLoading}
-        className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600/40 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+        className="w-full rounded-lg bg-primary-600 py-3 text-sm font-semibold text-white hover:bg-primary-700 focus:outline-hidden focus:ring-2 focus:ring-primary-600/40 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
       >
         {isLoading ? 'Saving...' : 'Continue to Review'}
       </button>

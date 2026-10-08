@@ -47,16 +47,16 @@ export function Button({
   return (
     <button
       disabled={isDisabled}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-colors focus:outline-none focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-colors focus:outline-hidden focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
       {...rest}
     >
       {loading ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
       ) : leftIcon ? (
-        <span className="flex-shrink-0">{leftIcon}</span>
+        <span className="shrink-0">{leftIcon}</span>
       ) : null}
       {children}
-      {!loading && rightIcon && <span className="flex-shrink-0">{rightIcon}</span>}
+      {!loading && rightIcon && <span className="shrink-0">{rightIcon}</span>}
     </button>
   );
 }

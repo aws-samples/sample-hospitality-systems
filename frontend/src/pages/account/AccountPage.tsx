@@ -60,7 +60,7 @@ const AccountPage: React.FC = () => {
 
   const inputClass =
     'w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 ' +
-    'focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 transition-colors';
+    'focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600 transition-colors';
 
   return (
     <PublicLayout>
@@ -78,7 +78,7 @@ const AccountPage: React.FC = () => {
         ) : (
           <>
             {/* Profile info card */}
-            <div className="mt-8 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+            <div className="mt-8 rounded-xl border border-neutral-200 bg-white p-6 shadow-xs">
               <div className="flex items-center justify-between">
                 <h2 className="font-display text-lg font-semibold text-neutral-900">
                   Profile Information
@@ -205,7 +205,7 @@ const AccountPage: React.FC = () => {
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
               <Link
                 to="/account/reservations"
-                className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-5 shadow-sm hover:border-primary-300 hover:shadow-md transition-all"
+                className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-5 shadow-xs hover:border-primary-300 hover:shadow-md transition-all"
               >
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-50">
                   <svg className="h-6 w-6 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -220,7 +220,7 @@ const AccountPage: React.FC = () => {
 
               <Link
                 to="/"
-                className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-5 shadow-sm hover:border-primary-300 hover:shadow-md transition-all"
+                className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-white p-5 shadow-xs hover:border-primary-300 hover:shadow-md transition-all"
               >
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-accent-50">
                   <svg className="h-6 w-6 text-accent-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

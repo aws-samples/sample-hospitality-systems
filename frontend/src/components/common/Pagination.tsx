@@ -44,7 +44,7 @@ const Pagination: React.FC<PaginationProps> = ({
   };
 
   const btnBase =
-    'inline-flex h-9 min-w-[2.25rem] items-center justify-center rounded-lg text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-primary-600/40';
+    'inline-flex h-9 min-w-9 items-center justify-center rounded-lg text-sm font-medium transition-colors focus:outline-hidden focus:ring-2 focus:ring-primary-600/40';
 
   return (
     <nav className="flex items-center justify-center gap-1" aria-label="Pagination">

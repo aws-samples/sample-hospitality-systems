@@ -59,7 +59,7 @@ const BookingConfirmation: React.FC<BookingConfirmationProps> = ({
       </div>
 
       {/* Reservation details card */}
-      <div className="mt-8 rounded-xl border border-neutral-200 bg-white p-6 text-left shadow-sm">
+      <div className="mt-8 rounded-xl border border-neutral-200 bg-white p-6 text-left shadow-xs">
         <h3 className="font-display text-lg font-semibold text-neutral-900">Reservation Details</h3>
 
         <div className="mt-4 space-y-3">

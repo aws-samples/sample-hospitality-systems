@@ -10,8 +10,8 @@ interface ImagePlaceholderProps {
 
 const aspectClasses: Record<string, string> = {
   '16:9': 'aspect-video',
-  '4:3': 'aspect-[4/3]',
-  '3:2': 'aspect-[3/2]',
+  '4:3': 'aspect-4/3',
+  '3:2': 'aspect-3/2',
   '1:1': 'aspect-square',
 };
 
@@ -71,7 +71,7 @@ const ImagePlaceholder: React.FC<ImagePlaceholderProps> = ({
 
   return (
     <div
-      className={`flex items-center justify-center bg-gradient-to-br from-primary-600 to-primary-900 ${aspect} ${className}`}
+      className={`flex items-center justify-center bg-linear-to-br from-primary-600 to-primary-900 ${aspect} ${className}`}
       role="img"
       aria-label={alt}
     >

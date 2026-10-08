@@ -79,7 +79,7 @@ const PaymentForm: React.FC<PaymentFormProps> = ({
       <button
         type="submit"
         disabled={disabled}
-        className="w-full rounded-lg bg-accent-500 py-3 text-sm font-semibold text-white hover:bg-accent-600 focus:outline-none focus:ring-2 focus:ring-accent-400 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+        className="w-full rounded-lg bg-accent-500 py-3 text-sm font-semibold text-white hover:bg-accent-600 focus:outline-hidden focus:ring-2 focus:ring-accent-400 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
       >
         {processing || isLoading ? (
           <span className="flex items-center justify-center gap-2">

@@ -99,7 +99,7 @@ const ReservationsPage: React.FC = () => {
               onClick={() => setActiveTab(tab.key)}
               className={`flex-1 rounded-md py-2 text-sm font-medium transition-colors ${
                 activeTab === tab.key
-                  ? 'bg-white text-primary-600 shadow-sm'
+                  ? 'bg-white text-primary-600 shadow-xs'
                   : 'text-neutral-500 hover:text-neutral-700'
               }`}
             >
@@ -120,7 +120,7 @@ const ReservationsPage: React.FC = () => {
                 <Link
                   key={reservation.reservationId}
                   to={`/account/reservations/${reservation.reservationId}`}
-                  className="block rounded-xl border border-neutral-200 bg-white p-5 shadow-sm hover:border-primary-300 hover:shadow-md transition-all"
+                  className="block rounded-xl border border-neutral-200 bg-white p-5 shadow-xs hover:border-primary-300 hover:shadow-md transition-all"
                 >
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex-1">

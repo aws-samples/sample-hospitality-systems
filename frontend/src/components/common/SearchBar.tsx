@@ -47,21 +47,21 @@ const SearchBar: React.FC<SearchBarProps> = ({
     return (
       <form
         onSubmit={handleSubmit}
-        className="flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-4 py-1.5 shadow-sm"
+        className="flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-4 py-1.5 shadow-xs"
       >
         <input
           type="text"
           value={params.destination}
           onChange={(e) => update('destination', e.target.value)}
           placeholder="Where to?"
-          className="w-32 border-none bg-transparent text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none"
+          className="w-32 border-none bg-transparent text-sm text-neutral-800 placeholder-neutral-400 focus:outline-hidden"
         />
         <span className="text-neutral-300">|</span>
         <input
           type="date"
           value={params.checkIn}
           onChange={(e) => update('checkIn', e.target.value)}
-          className="w-[120px] border-none bg-transparent text-sm text-neutral-800 focus:outline-none"
+          className="w-[120px] border-none bg-transparent text-sm text-neutral-800 focus:outline-hidden"
         />
         <span className="text-neutral-300">|</span>
         <input
@@ -69,7 +69,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
           value={params.checkOut}
           onChange={(e) => update('checkOut', e.target.value)}
           min={params.checkIn}
-          className="w-[120px] border-none bg-transparent text-sm text-neutral-800 focus:outline-none"
+          className="w-[120px] border-none bg-transparent text-sm text-neutral-800 focus:outline-hidden"
         />
         <button
           type="submit"
@@ -111,7 +111,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
               value={params.destination}
               onChange={(e) => update('destination', e.target.value)}
               placeholder="City, hotel, or destination"
-              className="w-full rounded-lg border border-neutral-300 bg-white py-2 pl-9 pr-3 text-sm text-neutral-800 placeholder-neutral-400 transition-colors focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600"
+              className="w-full rounded-lg border border-neutral-300 bg-white py-2 pl-9 pr-3 text-sm text-neutral-800 placeholder-neutral-400 transition-colors focus:border-primary-600 focus:outline-hidden focus:ring-1 focus:ring-primary-600"
             />
           </div>
         </div>
@@ -140,7 +140,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
         <div className="md:col-span-2">
           <button
             type="submit"
-            className="w-full rounded-lg bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600/40"
+            className="w-full rounded-lg bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700 focus:outline-hidden focus:ring-2 focus:ring-primary-600/40"
           >
             Search
           </button>

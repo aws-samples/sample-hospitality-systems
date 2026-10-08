@@ -134,7 +134,7 @@ export default function GuestsPage() {
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Search name or email"
-                className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-neutral-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 outline-none"
+                className="w-full pl-9 pr-3 py-2 text-sm rounded-md border border-neutral-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 outline-hidden"
               />
             </div>
             <div className="flex flex-wrap gap-1">
@@ -154,7 +154,7 @@ export default function GuestsPage() {
             </div>
           </div>
 
-          <div className="max-h-[28rem] overflow-y-auto">
+          <div className="max-h-112 overflow-y-auto">
             {guestsLoading ? (
               <div className="p-4 space-y-3">
                 {Array.from({ length: 6 }).map((_, i) => (

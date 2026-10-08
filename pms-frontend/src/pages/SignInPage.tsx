@@ -22,7 +22,7 @@ export default function SignInPage() {
 
   return (
     <div
-      className="min-h-screen bg-gradient-to-br from-primary-900 via-primary-700 to-primary-600 flex items-center justify-center px-4 py-8"
+      className="min-h-screen bg-linear-to-br from-primary-900 via-primary-700 to-primary-600 flex items-center justify-center px-4 py-8"
       data-testid="sign-in-page"
     >
       <div className="w-full max-w-md">

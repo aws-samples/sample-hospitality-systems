@@ -43,7 +43,7 @@ const PropertyCard: React.FC<PropertyCardProps> = ({ property, searchParams }) =
     <button
       type="button"
       onClick={() => navigate(buildUrl())}
-      className="group w-full rounded-lg bg-white shadow-md hover:shadow-lg transition-shadow duration-300 overflow-hidden text-left focus:outline-none focus:ring-2 focus:ring-primary-600/40"
+      className="group w-full rounded-lg bg-white shadow-md hover:shadow-lg transition-shadow duration-300 overflow-hidden text-left focus:outline-hidden focus:ring-2 focus:ring-primary-600/40"
     >
       {/* Image */}
       <ImagePlaceholder

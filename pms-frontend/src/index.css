@@ -1,6 +1,131 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@theme {
+  --color-primary-50: #e8edf4;
+  --color-primary-100: #c5d1e3;
+  --color-primary-200: #9eb3d0;
+  --color-primary-300: #7795bd;
+  --color-primary-400: #597eaf;
+  --color-primary-500: #3b67a1;
+  --color-primary-600: #1e3a5f;
+  --color-primary-700: #1a3253;
+  --color-primary-800: #152a46;
+  --color-primary-900: #0f1f33;
+  --color-primary-950: #091422;
+
+  --color-accent-50: #faf6ee;
+  --color-accent-100: #f2e8d0;
+  --color-accent-200: #e6d4a8;
+  --color-accent-300: #d9bf80;
+  --color-accent-400: #d1b177;
+  --color-accent-500: #c9a96e;
+  --color-accent-600: #b8944f;
+  --color-accent-700: #9a7a3e;
+  --color-accent-800: #7c6232;
+  --color-accent-900: #5e4a26;
+  --color-accent-950: #3f3119;
+
+  --color-neutral-50: #f9fafb;
+  --color-neutral-100: #f3f4f6;
+  --color-neutral-200: #e5e7eb;
+  --color-neutral-300: #d1d5db;
+  --color-neutral-400: #9ca3af;
+  --color-neutral-500: #6b7280;
+  --color-neutral-600: #4b5563;
+  --color-neutral-700: #374151;
+  --color-neutral-800: #1f2937;
+  --color-neutral-900: #111827;
+  --color-neutral-950: #030712;
+
+  /*
+    Built-in palette shades used by this app (and gray-200 for the default
+    border color below), pinned to sRGB hex values. Tailwind v4 defines its
+    default palette in OKLCH, which renders these slightly more saturated
+    than the original design.
+  */
+  --color-gray-200: #e5e7eb;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+  --color-red-700: #b91c1c;
+
+  --color-orange-50: #fff7ed;
+  --color-orange-100: #ffedd5;
+  --color-orange-800: #9a3412;
+
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #fef3c7;
+  --color-amber-200: #fde68a;
+  --color-amber-800: #92400e;
+
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #047857;
+  --color-emerald-800: #065f46;
+
+  --color-purple-50: #faf5ff;
+  --color-purple-100: #f3e8ff;
+  --color-purple-700: #7e22ce;
+
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-display: Playfair Display, Georgia, serif;
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+/*
+  Keep date inputs at the browser's native WebKit sizing. Tailwind v4's
+  preflight removes the padding inside date/time fields, which makes them
+  slightly shorter than the original design.
+*/
+@layer base {
+  ::-webkit-date-and-time-value {
+    min-height: revert;
+    text-align: revert;
+  }
+
+  ::-webkit-datetime-edit {
+    display: revert;
+  }
+
+  ::-webkit-datetime-edit-fields-wrapper {
+    padding: revert;
+  }
+
+  ::-webkit-datetime-edit,
+  ::-webkit-datetime-edit-year-field,
+  ::-webkit-datetime-edit-month-field,
+  ::-webkit-datetime-edit-day-field,
+  ::-webkit-datetime-edit-hour-field,
+  ::-webkit-datetime-edit-minute-field,
+  ::-webkit-datetime-edit-second-field,
+  ::-webkit-datetime-edit-millisecond-field,
+  ::-webkit-datetime-edit-meridiem-field {
+    padding-block: revert;
+  }
+}
 
 @layer base {
   body {

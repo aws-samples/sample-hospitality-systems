@@ -28,7 +28,7 @@ const HomePage: React.FC = () => {
   return (
     <PublicLayout transparentHeader>
       {/* Hero Section */}
-      <section className="relative flex min-h-[600px] items-center justify-center bg-gradient-to-br from-primary-900 via-primary-700 to-primary-600">
+      <section className="relative flex min-h-[600px] items-center justify-center bg-linear-to-br from-primary-900 via-primary-700 to-primary-600">
         {/* Decorative background pattern */}
         <div className="absolute inset-0 opacity-10">
           <div
@@ -94,7 +94,7 @@ const HomePage: React.FC = () => {
       {/* Promo Banner */}
       <section className="bg-accent-500/10">
         <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
-          <div className="flex flex-col items-center justify-between gap-4 rounded-2xl bg-gradient-to-r from-primary-600 to-primary-800 p-8 text-center md:flex-row md:text-left">
+          <div className="flex flex-col items-center justify-between gap-4 rounded-2xl bg-linear-to-r from-primary-600 to-primary-800 p-8 text-center md:flex-row md:text-left">
             <div>
               <h3 className="font-display text-2xl font-bold text-white">
                 Save 10% on Your First Booking
